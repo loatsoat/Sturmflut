@@ -1,0 +1,18 @@
+syntax = "proto3";
+package assignment;
+
+message Task {
+  string id = 1;
+  string type = 2;
+  int32 x = 3;
+  int32 y = 4;
+  int32 priority = 5;
+}
+
+message Ack {
+  string status = 1;
+}
+
+service Vehicle {
+  rpc Assign(Task) returns (Ack) {}
+}
