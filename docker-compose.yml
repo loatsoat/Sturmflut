@@ -1,0 +1,34 @@
+services:
+  leitstelle:
+    build:
+      context: ./leitstelle
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./map.json:/app/map.json
+      - ./leitstelle/app.py:/app/app.py
+    restart: unless-stopped
+
+  sensor-camera:
+    build:
+      context: ./sensoren
+    command: ["sim_camera.py"]
+    environment:
+      LEITSTELLE: http://leitstelle:8080
+    depends_on:
+      - leitstelle
+    volumes:
+      - ./sensoren/sim_camera.py:/app/sim_camera.py
+    restart: unless-stopped
+
+  sensor-water:
+    build:
+      context: ./sensoren
+    command: ["sim_water_sensor.py"]
+    environment:
+      LEITSTELLE: http://leitstelle:8080
+    depends_on:
+      - leitstelle
+    volumes:
+      - ./sensoren/sim_water_sensor.py:/app/sim_water_sensor.py
+    restart: unless-stopped

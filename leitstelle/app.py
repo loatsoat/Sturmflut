@@ -1,6 +1,14 @@
-import socket, threading, json, os
+import json
+import math
+import os
+import socket
+import threading
 
 MAP_FILE = 'map.json'
+MAP_STYLE = 'island-v2'
+MAP_WIDTH = 20
+MAP_HEIGHT = 20
+MAP_VERSION = 7
 
 
 class Leitstelle:
@@ -12,28 +20,87 @@ class Leitstelle:
         self.next_incident_id = 1
         threading.Thread(target=self.incident_processor, daemon=True).start()
 
-    def load_map(self):
-        # ensure 20x20 map
-        try:
-            data = json.load(open(MAP_FILE))
-            if len(data.get('cells', [])) >= 400:
-                return data
-        except Exception:
-            pass
-        w, h = 20, 20
+    def is_valid_map(self, data):
+        if not isinstance(data, dict):
+            return False
+        if data.get('style') != MAP_STYLE:
+            return False
+        if data.get('version') != MAP_VERSION:
+            return False
+        if data.get('width') != MAP_WIDTH or data.get('height') != MAP_HEIGHT:
+            return False
+        cells = data.get('cells', [])
+        if len(cells) != MAP_WIDTH * MAP_HEIGHT:
+            return False
+
+        cell_by_pos = {(cell.get('x'), cell.get('y')): cell for cell in cells}
+        for y in range(MAP_HEIGHT):
+            for x in range(MAP_WIDTH):
+                cell = cell_by_pos.get((x, y))
+                if not cell:
+                    return False
+                if x in (0, MAP_WIDTH - 1) or y in (0, MAP_HEIGHT - 1):
+                    if cell.get('type') != 'water':
+                        return False
+                elif cell.get('type') not in {'sand', 'sand_light'}:
+                    return False
+
+        if not any(cell.get('infrastructure') == 'camera' for cell in cells):
+            return False
+        return True
+
+    def create_island_map(self):
+        w, h = MAP_WIDTH, MAP_HEIGHT
         cells = []
+
+        def terrain_noise(x, y):
+            # Stable pseudo-noise to keep the island pixel-like without using randomness.
+            return ((x * 37 + y * 19 + x * y * 11) % 9) / 9.0
+
         for y in range(h):
             for x in range(w):
-                t = 'water' if (x + y) % 7 == 0 else 'land'
-                cells.append({'x': x, 'y': y, 'type': t})
-        data = {'width': w, 'height': h, 'cells': cells}
-        # add a few infrastructures
-        infra = {(2, 2): 'depot', (10, 0): 'bridge', (5, 15): 'charging_station', (18, 4): 'helipad'}
-        for (x, y), name in infra.items():
+                if x in (0, w - 1) or y in (0, h - 1):
+                    cell_type = 'water'
+                else:
+                    dx = abs(x - 15)
+                    dy = abs(y - 5)
+                    score = (dx / 5.8) + (dy / 3.8) + (terrain_noise(x, y) * 0.42)
+                    spur = (x >= 17 and 5 <= y <= 9 and (x + y) % 2 == 0)
+                    if score <= 0.98 or spur:
+                        cell_type = 'sand'
+                    elif score <= 1.62:
+                        cell_type = 'sand_light'
+                    else:
+                        cell_type = 'water'
+                cells.append({'x': x, 'y': y, 'type': cell_type})
+
+        data = {'width': w, 'height': h, 'style': MAP_STYLE, 'version': MAP_VERSION, 'cells': cells}
+        infrastructure = {
+            (15, 6): 'camera',
+            (14, 6): 'helipad',
+            (16, 7): 'bridge',
+            (14, 8): 'depot',
+            (13, 7): 'harbor',
+            (16, 9): 'charging_station',
+        }
+        for (x, y), name in infrastructure.items():
             idx = y * w + x
             if 0 <= idx < len(data['cells']):
                 data['cells'][idx]['infrastructure'] = name
-        json.dump(data, open(MAP_FILE, 'w'))
+
+        return data
+
+    def load_map(self):
+        try:
+            with open(MAP_FILE, 'r', encoding='utf-8') as handle:
+                data = json.load(handle)
+            if self.is_valid_map(data):
+                return data
+        except Exception:
+            pass
+        data = self.create_island_map()
+        with open(MAP_FILE, 'w', encoding='utf-8') as handle:
+            json.dump(data, handle)
         return data
 
     def incident_processor(self):
@@ -43,10 +110,19 @@ class Leitstelle:
                 inc = self.incidents.pop(0)
                 print('Incident:', inc)
                 try:
+                    raw = inc.get('raw', {}) if isinstance(inc.get('raw', {}), dict) else {}
+                    value = inc.get('value', '')
+                    if not value:
+                        if inc.get('type') == 'person_detected' and 'confidence' in raw:
+                            value = f"confidence={raw.get('confidence')}"
+                        elif inc.get('type') == 'water_level_alert' and 'value' in raw:
+                            value = f"level={raw.get('value')}"
+                        elif inc.get('type') == 'blocked_route' and raw.get('description'):
+                            value = f"description={raw.get('description')}"
                     self.history.append({
                         'id': inc['id'],
                         'type': inc.get('type', ''),
-                        'value': inc.get('value', ''),
+                        'value': value,
                         'processed_at': int(time.time())
                     })
                 except Exception:
@@ -84,17 +160,65 @@ class Leitstelle:
             elif method == 'GET' and path == '/':
                 w = self.map['width']; h = self.map['height']
                 cells = {(c['x'], c['y']): c for c in self.map['cells']}
-                rows = ['<table style="border-collapse:collapse">']
+                cell_size = '30px'
+                infrastructure_colors = {
+                    'camera': '#c94c4c',
+                    'helipad': '#c94c4c',
+                    'depot': '#c94c4c',
+                    'harbor': '#c94c4c',
+                    'bridge': '#c94c4c',
+                    'charging_station': '#c94c4c',
+                }
+                infrastructure_labels = {
+                    'camera': 'CAM',
+                    'helipad': 'HEL',
+                    'depot': 'DEP',
+                    'harbor': 'HAR',
+                    'bridge': 'BRG',
+                    'charging_station': 'CHG',
+                }
+                rows = ['<table style="border-collapse:collapse;margin:8px auto;font-family:Arial,sans-serif">']
                 for y in range(h):
                     cols = ['<tr>']
                     for x in range(w):
                         c = cells.get((x, y), {'type': 'land'})
-                        bg = '#89CFF0' if c.get('type') == 'water' else '#C2B280'
                         label = c.get('infrastructure', '')
-                        cols.append(f'<td style="width:20px;height:18px;border:1px solid #666;background:{bg};font-size:8px;text-align:center">{label}</td>')
+                        if label:
+                            bg = infrastructure_colors.get(label, '#ffb703')
+                            display = infrastructure_labels.get(label, label[:3].upper())
+                            text_color = '#111111'
+                            title = label.replace('_', ' ')
+                        else:
+                            terrain = c.get('type')
+                            if terrain == 'sand':
+                                bg = '#d9c77a'
+                            elif terrain == 'sand_light':
+                                bg = '#f1e4a6'
+                            else:
+                                bg = '#16719B' if terrain == 'water' else '#d9c77a'
+                            display = ''
+                            text_color = '#111111' if terrain != 'water' else '#ffffff'
+                            title = terrain
+                        cols.append(
+                            f'<td title="{title}" '
+                            f'style="width:{cell_size};min-width:{cell_size};max-width:{cell_size};'
+                            f'height:{cell_size};min-height:{cell_size};max-height:{cell_size};'
+                            f'padding:0;border:1px solid #5e5e5e;box-sizing:border-box;'
+                            f'background:{bg};font-size:9px;line-height:1;font-weight:bold;'
+                            f'color:{text_color};text-align:center;vertical-align:middle;overflow:hidden;white-space:nowrap">{display}</td>'
+                        )
                     cols.append('</tr>'); rows.append(''.join(cols))
                 rows.append('</table>')
+                rows.append('<div style="width:fit-content;margin:8px auto;font-family:Arial,sans-serif;font-size:14px">')
+                rows.append('<strong>Legend:</strong> sand gold, sand light cream, all infrastructure red')
                 rows.append(f'<p>Units: {len(self.units)} Incidents: {len(self.incidents)}</p>')
+                unit_lines = [f"{uid}: {unit.get('role', 'unit')} @ ({unit.get('x', '?')},{unit.get('y', '?')})" for uid, unit in list(self.units.items())[:10]]
+                history_lines = [f"#{item.get('id')} {item.get('type', '')} value={item.get('value', '')}" for item in self.history[-10:]]
+                rows.append('<div style="display:flex;gap:24px;flex-wrap:wrap;margin-top:10px">')
+                rows.append('<div><strong>Units log</strong><pre style="margin:4px 0 0 0;padding:8px;background:#f6f6f6;border:1px solid #ddd;min-width:260px;white-space:pre-wrap">' + ('\n'.join(unit_lines) if unit_lines else 'No units registered yet') + '</pre></div>')
+                rows.append('<div><strong>Incident history</strong><pre style="margin:4px 0 0 0;padding:8px;background:#f6f6f6;border:1px solid #ddd;min-width:260px;white-space:pre-wrap">' + ('\n'.join(history_lines) if history_lines else 'No incidents processed yet') + '</pre></div>')
+                rows.append('</div>')
+                rows.append('</div>')
                 payload = ('\n'.join(rows)).encode()
                 conn.sendall(b'HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ' + str(len(payload)).encode() + b'\r\n\r\n' + payload)
             elif method == 'GET' and path == '/status':
