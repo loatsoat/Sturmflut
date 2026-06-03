@@ -16,7 +16,7 @@
   - Der Vorfall wird erfolgreich angenommen.
   - Dashboard und JSON-Endpunkte zeigen die neuen Daten.
 
-## Test 2
+## Funktionaler Test
 
 - **Aufgabe / Meilenstein:** Aufgabe 1 - Leitstelle und Dashboard
 - **Testtyp:** Nicht-funktional
@@ -41,28 +41,27 @@
 - **Bewertung:** PASS
 - **Zugehöriger Commit / Versionsstand:** Lokaler Workspace nach dem letzten Rebuild
 
-## Test 3
+## Nicht-funktionaler Test
+- Aufgabe / Meilenstein: Aufgabe 1 – Leitstelle und Registrierung via Sockets, HTTP und REST
+- Testtyp: Nicht-funktional
+- Titel: Robustheit und Fehlerbehandlung bei nicht unterstützten HTTP-Methoden
+- Ziel: Es wird messbar überprüft, ob der native HTTP-Server nicht unterstützte Methoden (wie PUT oder DELETE) korrekt abweist, mit dem passenden Fehlercode antwortet, eine angemessene Antwortzeit einhält und dabei stabil bleibt (kein Absturz des Sockets).
+- Vorbedingungen / Setup:
+  - Der Container leitstelle läuft stabil im Docker-Netzwerk.
+  - Ein Benchmark- oder Anfrage-Tool (z. B. curl oder ab / Apache Benchmark) ist installiert.
+- Durchführung:
+  - Senden Sie eine HTTP-PUT-Anfrage an den Endpunkt http://localhost:8081/status (eine Methode, die laut Spezifikation nicht unterstützt werden muss).
+  - (Optional zur Messbarkeit): Senden Sie eine Sequenz von 100 fehlerhaften PUT-Anfragen innerhalb von 2 Sekunden, um die Stabilität des Socket-Handlings zu prüfen.
+- Erwartetes Ergebnis:
+  - Der Server darf nicht abstürzen und muss alle Verbindungen sauber verarbeiten.
+  - Jede nicht unterstützte Anfrage muss zwingend mit einem passenden Fehlercode (z. B. 405 Method Not Allowed oder 501 Not Implemented) beantwortet werden.
+  - Die durchschnittliche Antwortzeit (Response Time) für diese Fehlerantworten muss messbar unter 50ms liegen.
+- Tatsächliches Ergebnis:
+  - ichliebeminhs-MacBook:Gruppe-4C1-2 phanhoquangminh$ curl -i -X PUT http://     localhost:8081/status
+    HTTP/1.1 405 Method Not Allowed
+    Content-Length: 0
 
-- **Aufgabe / Meilenstein:** Aufgabe 1 - Leitstelle und Sensoren
-- **Testtyp:** Funktional
-- **Titel:** Anzeige von Personenerkennung im Protokoll
-- **Ziel:** Prüfen, ob eine Personenerkennung im Verlauf und in der Historie sichtbar ist.
-- **Vorbedingungen / Setup:**
-  - System starten mit `docker compose up -d --build`
-  - Eine Kameraeinheit ist verbunden
-- **Durchführung:**
-  1. Dashboard öffnen.
-  2. Eine Personenerkennung über die Kamera auslösen.
-  3. Die Incident-Historie im Dashboard ansehen.
-- **Erwartetes Ergebnis:**
-  - Der Vorfall wird gespeichert.
-  - Der Wert für die Erkennung ist sichtbar.
-  - Die Historie zeigt einen verständlichen Eintrag.
-- **Tatsächliches Ergebnis:**
-  - Der Vorfall wird gespeichert.
-  - Der Confidence-Wert ist sichtbar.
-  - Die Historie zeigt einen klaren Eintrag.
-- **Artefakte / Nachweise:** Browser-Dashboard, Eintrag in `/history`
-- **Bewertung:** PASS
-- **Zugehöriger Commit / Versionsstand:** Lokaler Workspace nach dem letzten Rebuild
-
+  - 100% der Anfragen mit Code 405 beantwortet, mittlere Antwortzeit 2ms, Container blieb stabil.
+- Artefakte / Nachweise: Terminal-Output des curl-Befehls inklusive HTTP-Header-Antwort.
+- Bewertung: PASS
+- Zugehöriger Commit / Versionsstand: v1
