@@ -101,3 +101,21 @@ services:
       - ./sensoren/rpc_utils.py:/app/rpc_utils.py
       - ./leitstelle/proto:/app/proto
     restart: unless-stopped
+
+  sensor-stock:
+    build:
+      context: ./sensoren
+    command: ["sim_supply_sensor.py"]
+    environment:
+      LEITSTELLE: http://leitstelle:8080
+      UNIT_ID: supply-sensor-1
+      S_X: 14
+      S_Y: 8
+      REPORT_INTERVAL: 12
+    depends_on:
+      - leitstelle
+    volumes:
+      - ./sensoren/sim_supply_sensor.py:/app/sim_supply_sensor.py
+      - ./sensoren/rpc_utils.py:/app/rpc_utils.py
+      - ./leitstelle/proto:/app/proto
+    restart: unless-stopped

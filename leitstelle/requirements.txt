@@ -1,1 +1,2 @@
-requests
+grpcio
+grpcio-tools

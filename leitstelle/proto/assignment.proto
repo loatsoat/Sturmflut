@@ -1,18 +1,20 @@
 syntax = "proto3";
 package assignment;
 
-message Task {
-  string id = 1;
-  string type = 2;
-  int32 x = 3;
-  int32 y = 4;
+message AssignmentRequest {
+  string mission_id = 1;
+  string incident_type = 2;
+  int32 target_x = 3;
+  int32 target_y = 4;
   int32 priority = 5;
 }
 
-message Ack {
-  string status = 1;
+message AssignmentReply {
+  bool accepted = 1;
+  string message = 2;
+  string vehicle_state = 3;
 }
 
-service Vehicle {
-  rpc Assign(Task) returns (Ack) {}
+service VehicleAssignment {
+  rpc AssignMission(AssignmentRequest) returns (AssignmentReply) {}
 }

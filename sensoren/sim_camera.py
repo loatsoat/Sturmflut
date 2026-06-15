@@ -1,6 +1,8 @@
 import os
 import time
 import random
+import json
+from urllib import request as urlreq
 
 from http_utils import post_json
 
@@ -32,14 +34,42 @@ def run():
         register()
         conf = round(random.uniform(0.6, 0.99), 2)
         try:
-            post_json(HOST + '/incident', {
-                'type': 'person_detected',
-                'confidence': conf,
-                'x': CAM_X,
-                'y': CAM_Y,
-                'priority': 1,
-            })
-            print('camera reported person_detected', conf)
+            # fetch map and only report blocked_route if the camera is on sand
+            try:
+                with urlreq.urlopen(HOST + '/map', timeout=2) as resp:
+                    map_data = json.load(resp)
+            except Exception:
+                map_data = None
+
+            def cell_is_sand(mx, my):
+                if not map_data:
+                    return True
+                w = map_data.get('width', 0)
+                h = map_data.get('height', 0)
+                if mx < 0 or my < 0 or mx >= w or my >= h:
+                    return False
+                idx = my * w + mx
+                return map_data.get('cells', [])[idx].get('type') in {'sand', 'sand_light'}
+
+            if random.random() < 0.15 and cell_is_sand(CAM_X, CAM_Y):
+                desc = 'obstacle on path'
+                post_json(HOST + '/incident', {
+                    'type': 'blocked_route',
+                    'description': desc,
+                    'x': CAM_X,
+                    'y': CAM_Y,
+                    'priority': 2,
+                })
+                print('camera reported blocked_route')
+            else:
+                post_json(HOST + '/incident', {
+                    'type': 'person_detected',
+                    'confidence': conf,
+                    'x': CAM_X,
+                    'y': CAM_Y,
+                    'priority': 1,
+                })
+                print('camera reported person_detected', conf)
         except Exception as exc:
             print('camera report failed', exc)
         time.sleep(REPORT_INTERVAL)

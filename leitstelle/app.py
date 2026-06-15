@@ -355,6 +355,15 @@ class Leitstelle:
                     'camera': 'CAM',
                     'water_sensor': 'WTR',
                 }
+                # role specific styles to make sensors/camera more visible
+                role_styles = {
+                    'drone': {'bg': '#c084fc', 'text': '#111111', 'font': '12px'},
+                    'repair_rover': {'bg': '#ef4444', 'text': '#ffffff', 'font': '12px'},
+                    'supply_rover': {'bg': '#f59e0b', 'text': '#111111', 'font': '12px'},
+                    'camera': {'bg': '#60a5fa', 'text': '#000000', 'font': '12px', 'border': '2px solid #000000'},
+                    'water_sensor': {'bg': '#2dd4bf', 'text': '#000000', 'font': '12px', 'border': '1px solid #0f766e'},
+                    'supply_sensor': {'bg': '#86efac', 'text': '#000000', 'font': '12px', 'border': '1px solid #14532d'},
+                }
                 for y in range(h):
                     cols = ['<tr>']
                     for x in range(w):
@@ -376,28 +385,39 @@ class Leitstelle:
                             display = ''
                             text_color = '#111111' if terrain != 'water' else '#ffffff'
                             title = terrain
+                        border_css = '1px solid #5e5e5e'
+                        font_size = '11px'
                         unit = unit_cells.get((x, y))
                         if unit:
                             uid, unit_data = unit
                             role = unit_data.get('role', 'unit')
                             state = unit_data.get('state', 'IDLE')
                             short_name = live_labels.get(role, uid[:3].upper())
-                            title = f"{title} | {uid} role={role} state={state}"
+                            title = f"{title} - {uid} ({role}, {state})"
                             display = short_name
-                            text_color = '#111111'
-                            bg = '#c084fc'
+                            style = role_styles.get(role, {'bg': '#c084fc', 'text': '#111111', 'font': '12px'})
+                            text_color = style.get('text', '#111111')
+                            bg = style.get('bg', '#c084fc')
+                            border_css = style.get('border', '1px solid #5e5e5e')
+                            font_size = style.get('font', '12px')
                         cols.append(
                             f'<td title="{title}" '
                             f'style="width:{cell_size};min-width:{cell_size};max-width:{cell_size};'
                             f'height:{cell_size};min-height:{cell_size};max-height:{cell_size};'
-                            f'padding:0;border:1px solid #5e5e5e;box-sizing:border-box;'
-                            f'background:{bg};font-size:9px;line-height:1;font-weight:bold;'
-                            f'color:{text_color};text-align:center;vertical-align:middle;overflow:hidden;white-space:nowrap">{display}</td>'
+                            f'padding:0;box-sizing:border-box;'
+                            f'background:{bg};font-size:{font_size};line-height:1;font-weight:bold;'
+                            f'color:{text_color};text-align:center;vertical-align:middle;overflow:hidden;white-space:nowrap;border:{border_css}">{display}</td>'
                         )
                     cols.append('</tr>'); rows.append(''.join(cols))
                 rows.append('</table>')
                 rows.append('<div style="width:fit-content;margin:8px auto;font-family:Arial,sans-serif;font-size:14px">')
-                rows.append('<strong>Legend:</strong> sand gold, sand light cream, purple label = live unit or sensor')
+                rows.append('<strong>Legend:</strong> sand gold, sand light cream')
+                rows.append('<div style="display:flex;gap:12px;margin-top:6px;align-items:center">')
+                rows.append('<div style="display:flex;gap:6px;align-items:center"><div style="width:16px;height:16px;background:#60a5fa;border:1px solid #000"></div><div>CAM</div></div>')
+                rows.append('<div style="display:flex;gap:6px;align-items:center"><div style="width:16px;height:16px;background:#2dd4bf;border:1px solid #0f766e"></div><div>WTR</div></div>')
+                rows.append('<div style="display:flex;gap:6px;align-items:center"><div style="width:16px;height:16px;background:#86efac;border:1px solid #14532d"></div><div>SUP_SENSOR</div></div>')
+                rows.append('<div style="display:flex;gap:6px;align-items:center"><div style="width:16px;height:16px;background:#c084fc;border:1px solid #5e5e5e"></div><div>DRN</div></div>')
+                rows.append('</div>')
                 rows.append(f'<p>Units: {len(self.units)} Incidents queue: {len(self.incidents)} Active missions: {len(self.active_missions)}</p>')
                 unit_lines = [
                     f"{uid}: role={unit.get('role', 'unit')} state={unit.get('state', 'IDLE')} @ ({unit.get('x', '?')},{unit.get('y', '?')}) rpc={unit.get('rpc_host', '?')}:{unit.get('rpc_port', '?')}"
