@@ -7,6 +7,8 @@ services:
     volumes:
       - ./map.json:/app/map.json
       - ./leitstelle/app.py:/app/app.py
+      - ./leitstelle/rpc_utils.py:/app/rpc_utils.py
+      - ./leitstelle/proto:/app/proto
     restart: unless-stopped
 
   sensor-camera:
@@ -14,21 +16,88 @@ services:
       context: ./sensoren
     command: ["sim_camera.py"]
     environment:
+      # Internal Docker service URL used by the simulator containers.
       LEITSTELLE: http://leitstelle:8080
+      UNIT_ID: camera-1
+      RPC_HOST: sensor-camera
+      REPORT_INTERVAL: 10
     depends_on:
       - leitstelle
     volumes:
       - ./sensoren/sim_camera.py:/app/sim_camera.py
+      - ./sensoren/rpc_utils.py:/app/rpc_utils.py
+      - ./leitstelle/proto:/app/proto
+    restart: unless-stopped
+
+  sensor-water-level:
+    build:
+      context: ./sensoren
+    command: ["sim_water_sensor.py"]
+    environment:
+      # Internal Docker service URL used by the simulator containers.
+      LEITSTELLE: http://leitstelle:8080
+      UNIT_ID: water-sensor-1
+      WATER_X: 5
+      WATER_Y: 5
+      REPORT_INTERVAL: 8
+    depends_on:
+      - leitstelle
+    volumes:
+      - ./sensoren/sim_water_sensor.py:/app/sim_water_sensor.py
+      - ./sensoren/rpc_utils.py:/app/rpc_utils.py
+      - ./leitstelle/proto:/app/proto
+    restart: unless-stopped
+
+  sensor-drone:
+    build:
+      context: ./sensoren
+    command: ["sim_drone.py"]
+    environment:
+      # Internal Docker service URL used by the simulator containers.
+      LEITSTELLE: http://leitstelle:8080
+      UNIT_ID: drone-1
+      RPC_HOST: sensor-drone
+      RPC_PORT: 50051
+    depends_on:
+      - leitstelle
+    volumes:
+      - ./sensoren/sim_drone.py:/app/sim_drone.py
+      - ./sensoren/rpc_utils.py:/app/rpc_utils.py
+      - ./leitstelle/proto:/app/proto
     restart: unless-stopped
 
   sensor-water:
     build:
       context: ./sensoren
-    command: ["sim_water_sensor.py"]
+    command: ["sim_repair_rover.py"]
     environment:
+      # Internal Docker service URL used by the simulator containers.
       LEITSTELLE: http://leitstelle:8080
+      UNIT_ID: repair-rover-1
+      RPC_HOST: sensor-water
+      RPC_PORT: 50052
     depends_on:
       - leitstelle
     volumes:
-      - ./sensoren/sim_water_sensor.py:/app/sim_water_sensor.py
+      - ./sensoren/sim_repair_rover.py:/app/sim_repair_rover.py
+      - ./sensoren/rpc_utils.py:/app/rpc_utils.py
+      - ./leitstelle/proto:/app/proto
+    restart: unless-stopped
+
+  sensor-supply:
+    build:
+      context: ./sensoren
+    command: ["sim_supply_rover.py"]
+    environment:
+      # Internal Docker service URL used by the simulator containers.
+      LEITSTELLE: http://leitstelle:8080
+      UNIT_ID: supply-rover-1
+      RPC_HOST: sensor-supply
+      RPC_PORT: 50053
+    depends_on:
+      - leitstelle
+    volumes:
+      - ./sensoren/sim_supply_rover.py:/app/sim_supply_rover.py
+      - ./sensoren/rpc_utils.py:/app/rpc_utils.py
+      - ./leitstelle/proto:/app/proto
     restart: unless-stopped

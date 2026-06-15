@@ -1,52 +1,48 @@
 import os
-import random
 import time
+import random
 
-import requests
+from http_utils import post_json
 
 HOST = os.environ.get('LEITSTELLE', 'http://127.0.0.1:8080')
-CAMERA = {'id': 'camera-1', 'role': 'camera', 'x': 13, 'y': 9}
+UNIT_ID = os.environ.get('UNIT_ID', 'camera-1')
+REPORT_INTERVAL = int(os.environ.get('REPORT_INTERVAL', '10'))
+CAM_X = int(os.environ.get('CAM_X', '15'))
+CAM_Y = int(os.environ.get('CAM_Y', '6'))
+
+CAMERA = {
+    'id': UNIT_ID,
+    'role': 'camera',
+    'x': CAM_X,
+    'y': CAM_Y,
+    'state': 'IDLE',
+}
 
 
 def register():
     try:
-        requests.post(HOST + '/unit', json=CAMERA, timeout=2)
-    except Exception:
-        pass
-
-
-def send_incident(payload):
-    try:
-        requests.post(HOST + '/incident', json=payload, timeout=2)
-        print('sent incident', payload)
+        post_json(HOST + '/unit', CAMERA)
     except Exception as exc:
-        print('send failed', exc)
+        print('camera register failed', exc)
 
 
 def run():
     register()
     while True:
-        person_confidence = random.random()
-        print('person confidence:', person_confidence)
-        if person_confidence > 0.95:
-            send_incident({
+        register()
+        conf = round(random.uniform(0.6, 0.99), 2)
+        try:
+            post_json(HOST + '/incident', {
                 'type': 'person_detected',
-                'confidence': person_confidence,
-                'x': CAMERA['x'],
-                'y': CAMERA['y'],
+                'confidence': conf,
+                'x': CAM_X,
+                'y': CAM_Y,
                 'priority': 1,
             })
-
-        if random.random() < 0.05:
-            send_incident({
-                'type': 'blocked_route',
-                'description': 'debris',
-                'x': 12,
-                'y': 10,
-                'priority': 2,
-            })
-
-        time.sleep(2)
+            print('camera reported person_detected', conf)
+        except Exception as exc:
+            print('camera report failed', exc)
+        time.sleep(REPORT_INTERVAL)
 
 
 if __name__ == '__main__':

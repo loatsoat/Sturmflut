@@ -1,42 +1,48 @@
 import os
-import random
 import time
+import random
 
-import requests
+from http_utils import post_json
 
 HOST = os.environ.get('LEITSTELLE', 'http://127.0.0.1:8080')
-SENSOR = {'id': 'water-sensor-1', 'role': 'water_sensor', 'x': 8, 'y': 12}
+UNIT_ID = os.environ.get('UNIT_ID', 'water-sensor-1')
+REPORT_INTERVAL = int(os.environ.get('REPORT_INTERVAL', '8'))
+WATER_X = int(os.environ.get('WATER_X', '5'))
+WATER_Y = int(os.environ.get('WATER_Y', '5'))
+
+WATER_SENSOR = {
+    'id': UNIT_ID,
+    'role': 'water_sensor',
+    'x': WATER_X,
+    'y': WATER_Y,
+    'state': 'IDLE',
+}
 
 
 def register():
     try:
-        requests.post(HOST + '/unit', json=SENSOR, timeout=2)
-    except Exception:
-        pass
-
-
-def send_incident(payload):
-    try:
-        requests.post(HOST + '/incident', json=payload, timeout=2)
-        print('sent incident', payload)
+        post_json(HOST + '/unit', WATER_SENSOR)
     except Exception as exc:
-        print('send failed', exc)
+        print('water sensor register failed', exc)
 
 
 def run():
     register()
     while True:
-        level = random.gauss(50, 20)
-        print('water level:', level)
-        if level > 90:
-            send_incident({
+        register()
+        level = round(random.uniform(0.0, 10.0), 2)
+        try:
+            post_json(HOST + '/incident', {
                 'type': 'water_level_alert',
                 'value': level,
-                'x': SENSOR['x'],
-                'y': SENSOR['y'],
+                'x': 5,
+                'y': 5,
                 'priority': 2,
             })
-        time.sleep(3)
+            print('reported water level', level)
+        except Exception as exc:
+            print('water report failed', exc)
+        time.sleep(REPORT_INTERVAL)
 
 
 if __name__ == '__main__':
