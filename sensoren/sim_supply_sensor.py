@@ -1,10 +1,11 @@
+import json
 import os
 import time
 import random
-import json
 from urllib import request as urlreq
 
 from http_utils import post_json
+from mqtt_utils import build_client, publish_event
 
 HOST = os.environ.get('LEITSTELLE', 'http://127.0.0.1:8080')
 UNIT_ID = os.environ.get('UNIT_ID', 'supply-sensor-1')
@@ -20,6 +21,8 @@ SENSOR = {
     'state': 'IDLE',
 }
 
+LOW_STOCK_THRESHOLD = 20
+
 
 def register():
     try:
@@ -28,52 +31,80 @@ def register():
         print('supply sensor register failed', exc)
 
 
+def register_with_retry(retries=10, delay=3):
+    for i in range(retries):
+        try:
+            post_json(HOST + '/unit', SENSOR)
+            print('supply sensor registered')
+            return
+        except Exception as exc:
+            print(f'supply sensor register attempt {i+1} failed: {exc}')
+            time.sleep(delay)
+
+
+def fetch_map():
+    try:
+        with urlreq.urlopen(HOST + '/map', timeout=2) as resp:
+            return json.load(resp)
+    except Exception:
+        return None
+
+
+def cell_is_sand(map_data, mx, my):
+    if not map_data:
+        return True
+    w = map_data.get('width', 0)
+    h = map_data.get('height', 0)
+    if mx < 0 or my < 0 or mx >= w or my >= h:
+        return False
+    idx = my * w + mx
+    return map_data.get('cells', [])[idx].get('type') in {'sand', 'sand_light'}
+
+
 def run():
-    register()
+    mqtt_client = build_client(f'{UNIT_ID}-pub')
+    register_with_retry()
+
     while True:
         register()
-        # simulate supply level percent
         level = random.randint(5, 100)
-        try:
-            # fetch map and only post low_stock if sensor is on sand
+        map_data = fetch_map()
+        on_land = cell_is_sand(map_data, S_X, S_Y)
+
+        if level < LOW_STOCK_THRESHOLD and on_land:
+            event = {
+                'unit_id': UNIT_ID,
+                'type': 'low_stock',
+                'supply_level_percent': level,
+                'x': S_X,
+                'y': S_Y,
+                'priority': 2,
+                'timestamp': int(time.time()),
+            }
+            publish_event(mqtt_client, UNIT_ID, event)
             try:
-                with urlreq.urlopen(HOST + '/map', timeout=2) as resp:
-                    map_data = json.load(resp)
+                post_json(HOST + '/incident', event)
             except Exception:
-                map_data = None
-
-            def cell_is_sand(mx, my):
-                if not map_data:
-                    return True
-                w = map_data.get('width', 0)
-                h = map_data.get('height', 0)
-                if mx < 0 or my < 0 or mx >= w or my >= h:
-                    return False
-                idx = my * w + mx
-                return map_data.get('cells', [])[idx].get('type') in {'sand', 'sand_light'}
-
-            if level < 25 and cell_is_sand(S_X, S_Y):
-                post_json(HOST + '/incident', {
-                    'type': 'low_stock',
-                    'value': level,
+                pass
+            print(f'supply sensor reported low_stock level={level}% via MQTT')
+        else:
+            # Periodic status reading (not an alert)
+            if random.random() < 0.2:
+                event = {
+                    'unit_id': UNIT_ID,
+                    'type': 'supply_level',
+                    'supply_level_percent': level,
                     'x': S_X,
                     'y': S_Y,
-                    'priority': 2,
-                })
-                print('supply sensor reported low_stock', level)
-            else:
-                # occasionally post a supply level reading
-                if random.random() < 0.2:
-                    post_json(HOST + '/incident', {
-                        'type': 'supply_level',
-                        'value': level,
-                        'x': S_X,
-                        'y': S_Y,
-                        'priority': 3,
-                    })
-            
-        except Exception as exc:
-            print('supply sensor report failed', exc)
+                    'priority': 3,
+                    'timestamp': int(time.time()),
+                }
+                publish_event(mqtt_client, UNIT_ID, event)
+                try:
+                    post_json(HOST + '/incident', event)
+                except Exception:
+                    pass
+
         time.sleep(REPORT_INTERVAL)
 
 

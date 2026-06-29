@@ -4,6 +4,7 @@ import time
 from concurrent import futures
 
 from http_utils import post_json
+from mqtt_utils import build_client, publish_telemetry, publish_mission
 from rpc_utils import load_grpc_support
 
 HOST = os.environ.get('LEITSTELLE', 'http://127.0.0.1:8080')
@@ -23,6 +24,19 @@ DRONE = {
 STATE = {'value': 'IDLE'}
 GRPC, ASSIGNMENT_PB2, ASSIGNMENT_PB2_GRPC = load_grpc_support(os.path.dirname(os.path.abspath(__file__)))
 
+_mqtt = None  # set in run()
+
+
+def _telemetry_payload():
+    return {
+        'unit_id': UNIT_ID,
+        'role': 'drone',
+        'x': DRONE['x'],
+        'y': DRONE['y'],
+        'state': STATE['value'],
+        'timestamp': int(time.time()),
+    }
+
 
 def move_towards_target(target_x, target_y):
     while DRONE['x'] != target_x or DRONE['y'] != target_y:
@@ -35,17 +49,25 @@ def move_towards_target(target_x, target_y):
         elif DRONE['y'] > target_y:
             DRONE['y'] -= 1
         register()
+        if _mqtt:
+            publish_telemetry(_mqtt, UNIT_ID, _telemetry_payload())
         time.sleep(0.5)
 
 
 def send_mission_update(mission_id, state, message):
+    payload = {
+        'mission_id': mission_id,
+        'unit_id': UNIT_ID,
+        'state': state,
+        'message': message,
+        'timestamp': int(time.time()),
+    }
+    # MQTT primary
+    if _mqtt:
+        publish_mission(_mqtt, UNIT_ID, payload)
+    # HTTP fallback
     try:
-        post_json(HOST + '/mission_update', {
-            'mission_id': mission_id,
-            'unit_id': UNIT_ID,
-            'state': state,
-            'message': message,
-        })
+        post_json(HOST + '/mission_update', payload)
     except Exception as exc:
         print('mission update failed', exc)
 
@@ -67,7 +89,6 @@ class DroneAssignmentService(ASSIGNMENT_PB2_GRPC.VehicleAssignmentServicer):
                 message='drone not available',
                 vehicle_state=STATE['value'],
             )
-
         STATE['value'] = 'ASSIGNED'
         send_mission_update(request.mission_id, 'ASSIGNED', 'drone accepted mission')
         threading.Thread(
@@ -102,11 +123,27 @@ def register():
         pass
 
 
+def register_with_retry(retries=10, delay=3):
+    for i in range(retries):
+        try:
+            DRONE['state'] = STATE['value']
+            post_json(HOST + '/unit', DRONE)
+            print('drone registered')
+            return
+        except Exception as exc:
+            print(f'drone register attempt {i+1} failed: {exc}')
+            time.sleep(delay)
+
+
 def run():
+    global _mqtt
+    _mqtt = build_client(f'{UNIT_ID}-pub')
     rpc_server = start_rpc_server()
-    register()
+    register_with_retry()
+
     while True:
         register()
+        publish_telemetry(_mqtt, UNIT_ID, _telemetry_payload())
         time.sleep(2)
 
     rpc_server.stop(grace=0)
