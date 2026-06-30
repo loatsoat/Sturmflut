@@ -18,6 +18,7 @@ services:
     volumes:
       - ./map.json:/app/map.json
       - ./leitstelle/app.py:/app/app.py
+      - ./leitstelle/dashboard.py:/app/dashboard.py
       - ./leitstelle/rpc_utils.py:/app/rpc_utils.py
       - ./leitstelle/proto:/app/proto
     depends_on:
