@@ -57,9 +57,9 @@ def _now():
 # ── main class ────────────────────────────────────────────────────────────────
 class Leitstelle:
     def __init__(self):
-    self.map = self._load_map()
-    self.resources = RESOURCE_DEFINITIONS.copy()
-    self.units = {}
+        self.map = self._load_map()
+        self.resources = RESOURCE_DEFINITIONS.copy()
+        self.units = {}
         self.incidents, self.history = [], []
         self.active_missions, self.mission_log = {}, []
         self.next_incident_id = self.next_mission_id = 1
@@ -458,17 +458,12 @@ class Leitstelle:
             elif method == 'POST' and path == '/unit':
                 obj = json.loads(body or b'{}')
                 uid = obj.get('id') or f'unit{len(self.units)+1}'
-<<<<<<< HEAD
+                # role validation (preserve allowed set) + state normalization
                 role = obj.get('role', 'unit')
                 if role not in ALLOWED_ROLES:
                     role = 'unit'
                 obj['role'] = role
-                if obj.get('state') not in VEHICLE_STATES:
-                    obj['state'] = 'IDLE'
-=======
-                obj['role']  = obj.get('role', 'unit')
                 obj['state'] = obj.get('state') if obj.get('state') in VEHICLE_STATES else 'IDLE'
->>>>>>> origin/main
                 self.units[uid] = obj
                 self._respond(conn, '201 Created', json.dumps({'result':'registered','id':uid}).encode())
             elif method == 'POST' and path == '/incident':
