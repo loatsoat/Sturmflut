@@ -10,39 +10,15 @@ MAP_W = MAP_H = 20
 MAP_VER    = 8
 RPC_TO     = 2.0
 VEHICLE_STATES = {'IDLE', 'ASSIGNED', 'BUSY', 'ERROR'}
-ALLOWED_ROLES = {
-    'drone', 'repair_rover', 'supply_rover',
-    'camera', 'water_sensor', 'supply_sensor',
-}
-
-RESOURCE_DEFINITIONS = [
-    {
-        'id': 'charging_station',
-        'name': 'Charging Station',
-        'type': 'charging_station',
-        'x': 16,
-        'y': 9,
-        'capacity': 1,
-        'description': 'Central battery recharge point for drones and rovers',
-    }
-]
-
-RESOURCE_USER_ROLES = {
-    'charging_station': ['drone', 'repair_rover', 'supply_rover'],
-}
-
-# MQTT / dedup / event handling settings (from origin/main)
 MQTT_BROKER = os.environ.get('MQTT_BROKER', '127.0.0.1')
 MQTT_PORT   = int(os.environ.get('MQTT_PORT', '1883'))
-DEDUP_WIN   = 15
-STALE_LIM   = 60
+DEDUP_WIN   = 15  
+STALE_LIM   = 60  
 SKIP_TYPES  = {'water_level_ok', 'supply_level'}
 ROLE_MAP    = {
     'person_detected': 'drone',
-    'blocked_route': 'repair_rover',
-    'structure_damage': 'repair_rover',
-    'low_stock': 'supply_rover',
-    'material_request': 'supply_rover',
+    'blocked_route':   'repair_rover', 'structure_damage': 'repair_rover',
+    'low_stock':       'supply_rover', 'material_request': 'supply_rover',
 }
 
 
@@ -57,9 +33,8 @@ def _now():
 # ── main class ────────────────────────────────────────────────────────────────
 class Leitstelle:
     def __init__(self):
-    self.map = self._load_map()
-    self.resources = RESOURCE_DEFINITIONS.copy()
-    self.units = {}
+        self.map   = self._load_map()
+        self.units = {}
         self.incidents, self.history = [], []
         self.active_missions, self.mission_log = {}, []
         self.next_incident_id = self.next_mission_id = 1
@@ -319,156 +294,23 @@ class Leitstelle:
                 if not c: break
                 body += c; need -= len(c)
         try:
-<<<<<<< HEAD
-            if method == 'GET' and path == '/map':
-                payload = json.dumps(self.map).encode()
-                conn.sendall(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ' + str(len(payload)).encode() + b'\r\n\r\n' + payload)
-            elif method == 'GET' and path == '/':
-                w = self.map['width']; h = self.map['height']
-                cells = {(c['x'], c['y']): c for c in self.map['cells']}
-                unit_cells = {}
-                for uid, unit in self.units.items():
-                    x = unit.get('x')
-                    y = unit.get('y')
-                    if isinstance(x, int) and isinstance(y, int):
-                        unit_cells[(x, y)] = (uid, unit)
-                cell_size = '30px'
-                infrastructure_colors = {
-                    'helipad': '#c94c4c',
-                    'depot': '#c94c4c',
-                    'harbor': '#c94c4c',
-                    'bridge': '#c94c4c',
-                    'charging_station': '#c94c4c',
-                }
-                infrastructure_labels = {
-                    'helipad': 'HEL',
-                    'depot': 'DEP',
-                    'harbor': 'HAR',
-                    'bridge': 'BRG',
-                    'charging_station': 'CHG',
-                }
-                rows = ['<div style="margin:8px auto;font-family:Arial,sans-serif;max-width:fit-content">']
-                rows.append('<div style="margin-bottom:8px;font-size:14px">Live map refreshes every 3 seconds. Purple labels show current unit and sensor positions.</div>')
-                rows.append('<table style="border-collapse:collapse;">')
-                live_labels = {
-                    'drone': 'DRN',
-                    'repair_rover': 'RPR',
-                    'supply_rover': 'SUP',
-                    'camera': 'CAM',
-                    'water_sensor': 'WTR',
-                }
-                # role specific styles to make sensors/camera more visible
-                role_styles = {
-                    'drone': {'bg': '#c084fc', 'text': '#111111', 'font': '12px'},
-                    'repair_rover': {'bg': '#ef4444', 'text': '#ffffff', 'font': '12px'},
-                    'supply_rover': {'bg': '#f59e0b', 'text': '#111111', 'font': '12px'},
-                    'camera': {'bg': '#60a5fa', 'text': '#000000', 'font': '12px', 'border': '2px solid #000000'},
-                    'water_sensor': {'bg': '#2dd4bf', 'text': '#000000', 'font': '12px', 'border': '1px solid #0f766e'},
-                    'supply_sensor': {'bg': '#86efac', 'text': '#000000', 'font': '12px', 'border': '1px solid #14532d'},
-                }
-                for y in range(h):
-                    cols = ['<tr>']
-                    for x in range(w):
-                        c = cells.get((x, y), {'type': 'land'})
-                        label = c.get('infrastructure', '')
-                        if label:
-                            bg = infrastructure_colors.get(label, '#ffb703')
-                            display = infrastructure_labels.get(label, label[:3].upper())
-                            text_color = '#111111'
-                            title = label.replace('_', ' ')
-                        else:
-                            terrain = c.get('type')
-                            if terrain == 'sand':
-                                bg = '#d9c77a'
-                            elif terrain == 'sand_light':
-                                bg = '#f1e4a6'
-                            else:
-                                bg = '#16719B' if terrain == 'water' else '#d9c77a'
-                            display = ''
-                            text_color = '#111111' if terrain != 'water' else '#ffffff'
-                            title = terrain
-                        border_css = '1px solid #5e5e5e'
-                        font_size = '11px'
-                        unit = unit_cells.get((x, y))
-                        if unit:
-                            uid, unit_data = unit
-                            role = unit_data.get('role', 'unit')
-                            state = unit_data.get('state', 'IDLE')
-                            short_name = live_labels.get(role, uid[:3].upper())
-                            title = f"{title} - {uid} ({role}, {state})"
-                            display = short_name
-                            style = role_styles.get(role, {'bg': '#c084fc', 'text': '#111111', 'font': '12px'})
-                            text_color = style.get('text', '#111111')
-                            bg = style.get('bg', '#c084fc')
-                            border_css = style.get('border', '1px solid #5e5e5e')
-                            font_size = style.get('font', '12px')
-                        cols.append(
-                            f'<td title="{title}" '
-                            f'style="width:{cell_size};min-width:{cell_size};max-width:{cell_size};'
-                            f'height:{cell_size};min-height:{cell_size};max-height:{cell_size};'
-                            f'padding:0;box-sizing:border-box;'
-                            f'background:{bg};font-size:{font_size};line-height:1;font-weight:bold;'
-                            f'color:{text_color};text-align:center;vertical-align:middle;overflow:hidden;white-space:nowrap;border:{border_css}">{display}</td>'
-                        )
-                    cols.append('</tr>'); rows.append(''.join(cols))
-                rows.append('</table>')
-                rows.append('<div style="width:fit-content;margin:8px auto;font-family:Arial,sans-serif;font-size:14px">')
-                rows.append('<strong>Legend:</strong> sand gold, sand light cream')
-                rows.append('<div style="display:flex;gap:12px;margin-top:6px;align-items:center">')
-                rows.append('<div style="display:flex;gap:6px;align-items:center"><div style="width:16px;height:16px;background:#60a5fa;border:1px solid #000"></div><div>CAM</div></div>')
-                rows.append('<div style="display:flex;gap:6px;align-items:center"><div style="width:16px;height:16px;background:#2dd4bf;border:1px solid #0f766e"></div><div>WTR</div></div>')
-                rows.append('<div style="display:flex;gap:6px;align-items:center"><div style="width:16px;height:16px;background:#86efac;border:1px solid #14532d"></div><div>SUP_SENSOR</div></div>')
-                rows.append('<div style="display:flex;gap:6px;align-items:center"><div style="width:16px;height:16px;background:#c084fc;border:1px solid #5e5e5e"></div><div>DRN</div></div>')
-                rows.append('<div style="display:flex;gap:6px;align-items:center"><div style="width:16px;height:16px;background:#c94c4c;border:1px solid #7f1d1d"></div><div>CHG</div></div>')
-                rows.append('</div>')
-                rows.append(f'<p>Units: {len(self.units)} Incidents queue: {len(self.incidents)} Active missions: {len(self.active_missions)} Resources: {len(self.resources)}</p>')
-                unit_lines = [
-                    f"{uid}: role={unit.get('role', 'unit')} state={unit.get('state', 'IDLE')} @ ({unit.get('x', '?')},{unit.get('y', '?')}) rpc={unit.get('rpc_host', '?')}:{unit.get('rpc_port', '?')}"
-                    for uid, unit in list(self.units.items())[:12]
-                ]
-                history_lines = [f"#{item.get('id')} {item.get('type', '')} value={item.get('value', '')}" for item in self.history[-10:]]
-                mission_lines = [
-                    f"{item.get('mission_id')} unit={item.get('unit_id', '-')} state={item.get('state')} msg={item.get('message', '')}"
-                    for item in self.mission_log[-12:]
-                ]
-                rows.append('<div style="display:flex;gap:24px;flex-wrap:wrap;margin-top:10px">')
-                rows.append('<div><strong>Units log</strong><pre style="margin:4px 0 0 0;padding:8px;background:#f6f6f6;border:1px solid #ddd;min-width:260px;white-space:pre-wrap">' + ('\n'.join(unit_lines) if unit_lines else 'No units registered yet') + '</pre></div>')
-                rows.append('<div><strong>Incident history</strong><pre style="margin:4px 0 0 0;padding:8px;background:#f6f6f6;border:1px solid #ddd;min-width:260px;white-space:pre-wrap">' + ('\n'.join(history_lines) if history_lines else 'No incidents processed yet') + '</pre></div>')
-                rows.append('<div><strong>Mission progress</strong><pre style="margin:4px 0 0 0;padding:8px;background:#f6f6f6;border:1px solid #ddd;min-width:360px;white-space:pre-wrap">' + ('\n'.join(mission_lines) if mission_lines else 'No mission events yet') + '</pre></div>')
-                rows.append('</div>')
-                rows.append('<script>setTimeout(function(){window.location.reload();}, 3000);</script>')
-                rows.append('</div>')
-                payload = ('\n'.join(rows)).encode()
-                conn.sendall(b'HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ' + str(len(payload)).encode() + b'\r\n\r\n' + payload)
             if   method == 'GET'  and path == '/':
                 self._respond(conn, '200 OK', self._render().encode(), 'text/html; charset=utf-8')
             elif method == 'GET'  and path == '/map':
                 self._respond(conn, '200 OK', json.dumps(self.map).encode())
             elif method == 'GET'  and path == '/status':
                 self._respond(conn, '200 OK', json.dumps({
-                    'units': self.units,
-                    'incidents': self.incidents,
-                    'resources': getattr(self, 'resources', []),
+                    'units': self.units, 'incidents': self.incidents,
                     'next_incident_id': self.next_incident_id,
                     'active_missions': list(self.active_missions.values()),
-                    'mission_log': self.mission_log[-50:]
-                }).encode())
+                    'mission_log': self.mission_log[-50:]}).encode())
             elif method == 'GET'  and path == '/history':
                 self._respond(conn, '200 OK', json.dumps({'history': self.history}).encode())
             elif method == 'POST' and path == '/unit':
                 obj = json.loads(body or b'{}')
                 uid = obj.get('id') or f'unit{len(self.units)+1}'
-<<<<<<< HEAD
-                role = obj.get('role', 'unit')
-                if role not in ALLOWED_ROLES:
-                    role = 'unit'
-                obj['role'] = role
-                if obj.get('state') not in VEHICLE_STATES:
-                    obj['state'] = 'IDLE'
-=======
                 obj['role']  = obj.get('role', 'unit')
                 obj['state'] = obj.get('state') if obj.get('state') in VEHICLE_STATES else 'IDLE'
->>>>>>> origin/main
                 self.units[uid] = obj
                 self._respond(conn, '201 Created', json.dumps({'result':'registered','id':uid}).encode())
             elif method == 'POST' and path == '/incident':
