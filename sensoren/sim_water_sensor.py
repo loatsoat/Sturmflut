@@ -3,6 +3,7 @@ import time
 import random
 
 from http_utils import post_json
+from mqtt_utils import build_client, publish_event
 
 HOST = os.environ.get('LEITSTELLE', 'http://127.0.0.1:8080')
 UNIT_ID = os.environ.get('UNIT_ID', 'water-sensor-1')
@@ -18,6 +19,8 @@ WATER_SENSOR = {
     'state': 'IDLE',
 }
 
+ALERT_THRESHOLD_CM = 80
+
 
 def register():
     try:
@@ -26,22 +29,45 @@ def register():
         print('water sensor register failed', exc)
 
 
+def register_with_retry(retries=10, delay=3):
+    for i in range(retries):
+        try:
+            post_json(HOST + '/unit', WATER_SENSOR)
+            print('water sensor registered')
+            return
+        except Exception as exc:
+            print(f'water sensor register attempt {i+1} failed: {exc}')
+            time.sleep(delay)
+
+
 def run():
-    register()
+    mqtt_client = build_client(f'{UNIT_ID}-pub')
+    register_with_retry()
+
     while True:
         register()
-        level = round(random.uniform(0.0, 10.0), 2)
-        try:
-            post_json(HOST + '/incident', {
-                'type': 'water_level_alert',
-                'value': level,
-                'x': 5,
-                'y': 5,
-                'priority': 2,
-            })
-            print('reported water level', level)
-        except Exception as exc:
-            print('water report failed', exc)
+        # Simulate raw sensor reading: 0–120 cm
+        level_cm = round(random.uniform(0.0, 120.0), 1)
+
+        event = {
+            'unit_id': UNIT_ID,
+            'type': 'water_level_alert' if level_cm > ALERT_THRESHOLD_CM else 'water_level_ok',
+            'water_level_cm': level_cm,
+            'x': WATER_X,
+            'y': WATER_Y,
+            'priority': 2 if level_cm > ALERT_THRESHOLD_CM else 3,
+            'timestamp': int(time.time()),
+        }
+
+        publish_event(mqtt_client, UNIT_ID, event)
+        # HTTP fallback – only forward actual alerts
+        if event['type'] == 'water_level_alert':
+            try:
+                post_json(HOST + '/incident', event)
+            except Exception:
+                pass
+        print(f'water sensor reported level={level_cm} cm  type={event["type"]}')
+
         time.sleep(REPORT_INTERVAL)
 
 

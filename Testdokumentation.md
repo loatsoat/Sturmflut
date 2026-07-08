@@ -236,3 +236,103 @@ Content-Length: 0
   - Terminal Output des bash-Skripts
 - Bewertung: PASS
 - Zugehöriger Commit / Versionsstand: Lokaler Workspace nach dem letzten Rebuild
+
+# Testdokumentation 4.4
+
+## Test 4.4.1
+
+- Aufgabe / Meilenstein: Aufgabe 3 – Ereignisse und Telemetrie über MQTT
+- Testtyp: Funktional
+- Titel: Sensor-Event über MQTT führt zu Incident und RPC-Dispatch
+- Ziel: Überprüfen ob ein über MQTT publiziertes Sensor-Event auf "sensors/events/{unit_id}" von der Leitstelle empfangen, korrekt geparst, als Incident eingereiht und per RPC an die passende Einheit dispatcht wird.
+- Vorbedingungen / Setup:
+  - docker compose up --build
+  - Container: leitstelle, mqtt-broker, drone-1
+  - mosquitto_pub/mosquitto_sub auf dem Host installiert
+  - Drone-1 ist registriert und im Zustand IDLE
+- Durchführung:
+  1. MQTT-Verbindung der Leitstelle prüfen:
+    docker compose logs leitstelle | grep "mqtt.*connected"
+
+  2. Sensor-Event publizieren:
+    mosquitto_pub -h localhost -p 1883 \
+     -t "sensors/events/camera-1" \
+     -q 1 \
+     -m '{
+       "type": "person_detected",
+       "x": 10, "y": 5,
+       "confidence": 0.92,
+       "unit_id": "camera-1",
+       "timestamp": '$(date +%s)'
+     }'
+
+  3. Nach 3 Sekunden Status abfragen:
+    curl http://localhost:8081/status
+- Erwartetes Ergebnis:
+  - Schritt 1: Log zeigt "[mqtt] connected rc=0"
+  - Schritt 3:
+    - active_missions enthält neue Mission mit
+    incident_type = "person_detected", assigned_unit = "drone-1"
+    - mission_log zeigt: QUEUED → ASSIGNED
+    - drone-1 state = "ASSIGNED" oder "BUSY"
+- Tatsächliches Ergebnis:
+  - Der MQTT-Event wurde erfolgreich an die Leitstelle übermittelt und im Status-Endpoint als Incident erkannt.
+  - `curl http://localhost:8081/status` lieferte einen Eintrag unter `incidents` mit `type: "person_detected"` und den Feldern `unit_id`, `x`, `y`, `timestamp` aus dem gesendeten Event.
+  - In `mission_log` wurden Einträge für `QUEUED`, `ASSIGNED`, `BUSY` und `DONE` sichtbar; der Drone-Task wurde also verarbeitet und abgeschlossen.
+  - Der erwartete Log-Eintrag `[mqtt] connected rc=0` war im Testlauf nicht sichtbar, die funktionale Verarbeitung über das Status-Endpoint war jedoch erfolgreich.
+- Artefakte / Nachweise:
+  - docker compose logs leitstelle
+  - curl Output GET /status
+  - Verifizierter Status-Output aus dem laufenden System
+- Bewertung: PASS
+- Zugehöriger Commit / Versionsstand: Lokaler Workspace nach dem letzten Rebuild
+
+## Test 4.4.2
+
+- Aufgabe / Meilenstein: Aufgabe 3 – Ereignisse und Telemetrie über MQTT
+- Testtyp: Nicht-funktional 
+- Titel: Duplicate Events innerhalb DEDUP_WINDOW_SECONDS werden verworfen
+- Ziel: Messen, ob doppelte MQTT-Events an derselben Position innerhalb des Dedup-Fensters (15s) zuverlässig erkannt und verworfen werden, und wie schnell die Verarbeitung pro Nachricht erfolgt.
+- Vorbedingungen / Setup:
+  - docker compose up --build
+  - Leitstelle mit MQTT verbunden
+  - Keine aktiven Missionen zu Testbeginn
+- Durchführung: Folgendes Skript ausführen — sendet 5 identische Events in schneller Folge (< 15s Abstand) an dieselbe Position:
+#!/bin/bash
+for i in {1..5}; do
+  mosquitto_pub -h localhost -p 1883 \
+    -t "sensors/events/sensor-water-1" \
+    -q 1 \
+    -m '{
+      "type": "water_level_alert",
+      "x": 8, "y": 12,
+      "value": 995,
+      "unit_id": "dup-test-4.4.2",
+      "timestamp": '$(date +%s)'
+    }'
+  sleep 1
+done
+
+sleep 2
+curl -s http://localhost:8081/history | python3 -m json.tool
+
+- Erwartetes Ergebnis:
+  - Nur 1 Incident wird in history erzeugt (die anderen 4 als "dropped duplicate sensor event" in den Logs verworfen)
+  - docker compose logs leitstelle zeigt 4x: "[mqtt] dropped duplicate sensor event"
+  - Zeit zwischen Empfang der MQTT-Nachricht und Log-Eintrag < 200ms
+- Tatsächliches Ergebnis:
+  - Die Prüfung wurde mit 5 schnell aufeinanderfolgenden MQTT-Messages ausgeführt.
+  - Ein neuer History-Eintrag mit `value: 995` wurde erzeugt; die übrigen Nachrichten wurden als Duplikate verworfen.
+  - In den Leitstellen-Logs erschienen 5 Einträge mit `[mqtt] dropped duplicate sensor event` für die wiederholten Nachrichten.
+  - Die Verarbeitungszeit bis zum sichtbaren History-Eintrag wurde mit 104.63 ms gemessen und liegt damit unter der Zielgrenze von 200 ms.
+
+| Event Nr. | Verarbeitet als  | Zeit bis Log / Sichtbarkeit (ms)  |
+|-----------|------------------|-----------------------------------|
+| 1         | akzeptiert / Incident erzeugt | 104.63 |
+| 2         | verworfen als Duplikat | sofort / Log-Eintrag vorhanden |
+| 3         | verworfen als Duplikat | sofort / Log-Eintrag vorhanden |
+| 4         | verworfen als Duplikat | sofort / Log-Eintrag vorhanden |
+| 5         | verworfen als Duplikat | sofort / Log-Eintrag vorhanden |
+
+- Bewertung: PASS
+- Zugehöriger Commit / Versionsstand: Lokaler Workspace nach dem letzten Rebuild

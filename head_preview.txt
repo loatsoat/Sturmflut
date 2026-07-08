@@ -1,0 +1,260 @@
+﻿import json
+import math
+import os
+import socket
+import threading
+import time
+
+from rpc_utils import load_grpc_support
+
+MAP_FILE = 'map.json'
+MAP_STYLE = 'island-v2'
+MAP_WIDTH = 20
+MAP_HEIGHT = 20
+MAP_VERSION = 8
+RPC_TIMEOUT_SECONDS = 2.0
+
+VEHICLE_STATES = {'IDLE', 'ASSIGNED', 'BUSY', 'ERROR'}
+ALLOWED_ROLES = {
+    'drone', 'repair_rover', 'supply_rover',
+    'camera', 'water_sensor', 'supply_sensor',
+}
+RESOURCE_DEFINITIONS = [
+    {
+        'id': 'charging_station',
+        'name': 'Charging Station',
+        'type': 'charging_station',
+        'x': 16,
+        'y': 9,
+        'capacity': 1,
+        'description': 'Central battery recharge point for drones and rovers',
+    }
+]
+RESOURCE_USER_ROLES = {
+    'charging_station': ['drone', 'repair_rover', 'supply_rover'],
+}
+
+
+class Leitstelle:
+    def __init__(self):
+        self.map = self.load_map()
+        self.resources = RESOURCE_DEFINITIONS.copy()
+        self.units = {}
+        self.incidents = []
+        self.history = []
+        self.active_missions = {}
+        self.mission_log = []
+        self.next_incident_id = 1
+        self.next_mission_id = 1
+        self.lock = threading.Lock()
+        self.grpc, self.assignment_pb2, self.assignment_pb2_grpc = load_grpc_support(
+            os.path.dirname(os.path.abspath(__file__))
+        )
+        threading.Thread(target=self.incident_processor, daemon=True).start()
+
+    def is_valid_map(self, data):
+        if not isinstance(data, dict):
+            return False
+        if data.get('style') != MAP_STYLE:
+            return False
+        if data.get('version') != MAP_VERSION:
+            return False
+        if data.get('width') != MAP_WIDTH or data.get('height') != MAP_HEIGHT:
+            return False
+        cells = data.get('cells', [])
+        if len(cells) != MAP_WIDTH * MAP_HEIGHT:
+            return False
+
+        cell_by_pos = {(cell.get('x'), cell.get('y')): cell for cell in cells}
+        for y in range(MAP_HEIGHT):
+            for x in range(MAP_WIDTH):
+                cell = cell_by_pos.get((x, y))
+                if not cell:
+                    return False
+                if x in (0, MAP_WIDTH - 1) or y in (0, MAP_HEIGHT - 1):
+                    if cell.get('type') != 'water':
+                        return False
+                elif cell.get('type') not in {'sand', 'sand_light'}:
+                    return False
+
+        if not any(cell.get('infrastructure') == 'harbor' for cell in cells):
+            return False
+        return True
+
+    def create_island_map(self):
+        w, h = MAP_WIDTH, MAP_HEIGHT
+        cells = []
+
+        def terrain_noise(x, y):
+            return ((x * 37 + y * 19 + x * y * 11) % 9) / 9.0
+
+        for y in range(h):
+            for x in range(w):
+                if x in (0, w - 1) or y in (0, h - 1):
+                    cell_type = 'water'
+                else:
+                    dx = abs(x - 15)
+                    dy = abs(y - 5)
+                    score = (dx / 5.8) + (dy / 3.8) + (terrain_noise(x, y) * 0.42)
+                    spur = (x >= 17 and 5 <= y <= 9 and (x + y) % 2 == 0)
+                    if score <= 0.98 or spur:
+                        cell_type = 'sand'
+                    elif score <= 1.62:
+                        cell_type = 'sand_light'
+                    else:
+                        cell_type = 'water'
+                cells.append({'x': x, 'y': y, 'type': cell_type})
+
+        data = {'width': w, 'height': h, 'style': MAP_STYLE, 'version': MAP_VERSION, 'cells': cells}
+        infrastructure = {
+            (14, 6): 'helipad',
+            (16, 7): 'bridge',
+            (14, 8): 'depot',
+            (13, 7): 'harbor',
+            (16, 9): 'charging_station',
+        }
+        for (x, y), name in infrastructure.items():
+            idx = y * w + x
+            if 0 <= idx < len(data['cells']):
+                data['cells'][idx]['infrastructure'] = name
+
+        return data
+
+    def load_map(self):
+        try:
+            with open(MAP_FILE, 'r', encoding='utf-8') as handle:
+                data = json.load(handle)
+            if self.is_valid_map(data):
+                return data
+        except Exception:
+            pass
+        data = self.create_island_map()
+        with open(MAP_FILE, 'w', encoding='utf-8') as handle:
+            json.dump(data, handle)
+        return data
+
+    def incident_processor(self):
+        while True:
+            inc = None
+            with self.lock:
+                if self.incidents:
+                    inc = self.incidents.pop(0)
+            if inc:
+                print('Incident:', inc)
+                self._process_incident(inc)
+            time.sleep(1)
+
+    def _process_incident(self, inc):
+        try:
+            raw = inc.get('raw', {}) if isinstance(inc.get('raw', {}), dict) else {}
+            value = inc.get('value', '')
+            if not value:
+                if inc.get('type') == 'person_detected' and 'confidence' in raw:
+                    value = f"confidence={raw.get('confidence')}"
+                elif inc.get('type') == 'water_level_alert' and 'value' in raw:
+                    value = f"level={raw.get('value')}"
+                elif inc.get('type') == 'blocked_route' and raw.get('description'):
+                    value = f"description={raw.get('description')}"
+
+            with self.lock:
+                self.history.append({
+                    'id': inc['id'],
+                    'type': inc.get('type', ''),
+                    'value': value,
+                    'processed_at': int(time.time())
+                })
+
+            self._dispatch_incident(inc)
+        except Exception as exc:
+            print('process incident failed:', exc)
+
+    def _determine_role(self, incident_type, raw):
+        # Person detection or hard-to-reach locations use the drone
+        if incident_type == 'person_detected':
+            return 'drone'
+
+        # Structure or blocked-route events use the repair rover
+        if incident_type in {'blocked_route', 'structure_damage'}:
+            return 'repair_rover'
+
+        # Low stock or material requests use the supply rover
+        if incident_type in {'low_stock', 'material_request'}:
+            return 'supply_rover'
+
+        # Fallback: if coordinates point to water or otherwise hard-to-reach, prefer drone
+        x = raw.get('x')
+        y = raw.get('y')
+        if isinstance(x, int) and isinstance(y, int):
+            cell = self._cell_at(x, y)
+            if cell.get('type') == 'water':
+                return 'drone'
+        return None
+
+    def _cell_at(self, x, y):
+        if x < 0 or y < 0 or x >= self.map['width'] or y >= self.map['height']:
+            return {'type': 'water'}
+        idx = y * self.map['width'] + x
+        return self.map['cells'][idx]
+
+    def _log_mission(self, mission_id, unit_id, state, message):
+        self.mission_log.append({
+            'mission_id': mission_id,
+            'unit_id': unit_id,
+            'state': state,
+            'message': message,
+            'timestamp': int(time.time()),
+        })
+        self.mission_log = self.mission_log[-200:]
+
+    def _can_unit_reach(self, unit, x, y):
+        role = unit.get('role')
+        target_cell = self._cell_at(x, y)
+        if role == 'drone':
+            return True
+        return target_cell.get('type') != 'water'
+
+    def _select_unit_for_role(self, role, target_x, target_y):
+        for uid, unit in sorted(self.units.items()):
+            if unit.get('role') != role:
+                continue
+            if unit.get('state', 'IDLE') != 'IDLE':
+                continue
+            if not unit.get('rpc_port'):
+                continue
+            if not self._can_unit_reach(unit, target_x, target_y):
+                continue
+            return uid, unit
+        return None, None
+
+    def _assign_rpc(self, unit_id, unit, mission):
+        if self.grpc is None:
+            return False, 'gRPC stubs unavailable'
+        host = unit.get('rpc_host') or unit_id
+        port = unit.get('rpc_port')
+        if not port:
+            return False, 'Missing rpc_port on unit'
+
+        endpoint = f"{host}:{port}"
+        channel = self.grpc.insecure_channel(endpoint)
+        stub = self.assignment_pb2_grpc.VehicleAssignmentStub(channel)
+        req = self.assignment_pb2.AssignmentRequest(
+            mission_id=mission['mission_id'],
+            incident_type=mission['incident_type'],
+            target_x=mission['target_x'],
+            target_y=mission['target_y'],
+            priority=mission['priority'],
+        )
+        try:
+            reply = stub.AssignMission(req, timeout=RPC_TIMEOUT_SECONDS)
+            if reply.accepted:
+                return True, reply.message or 'accepted'
+            return False, reply.message or 'rejected'
+        except self.grpc.RpcError as exc:
+            return False, f'rpc error: {exc.code().name}'
+        except Exception as exc:
+            return False, f'rpc failure: {exc}'
+        finally:
+            channel.close()
+
+    def _dispatch_incident(self, incident):
+        raw = incident.get('raw', {}) if isinstance(incident.get('raw', {}), dict) else {}

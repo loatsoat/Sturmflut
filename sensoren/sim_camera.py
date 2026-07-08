@@ -1,10 +1,11 @@
+import json
 import os
 import time
 import random
-import json
 from urllib import request as urlreq
 
 from http_utils import post_json
+from mqtt_utils import build_client, publish_event
 
 HOST = os.environ.get('LEITSTELLE', 'http://127.0.0.1:8080')
 UNIT_ID = os.environ.get('UNIT_ID', 'camera-1')
@@ -28,50 +29,79 @@ def register():
         print('camera register failed', exc)
 
 
+def register_with_retry(retries=10, delay=3):
+    for i in range(retries):
+        try:
+            post_json(HOST + '/unit', CAMERA)
+            print('camera registered')
+            return
+        except Exception as exc:
+            print(f'camera register attempt {i+1} failed: {exc}')
+            time.sleep(delay)
+
+
+def fetch_map():
+    try:
+        with urlreq.urlopen(HOST + '/map', timeout=2) as resp:
+            return json.load(resp)
+    except Exception:
+        return None
+
+
+def cell_is_sand(map_data, mx, my):
+    if not map_data:
+        return True
+    w = map_data.get('width', 0)
+    h = map_data.get('height', 0)
+    if mx < 0 or my < 0 or mx >= w or my >= h:
+        return False
+    idx = my * w + mx
+    return map_data.get('cells', [])[idx].get('type') in {'sand', 'sand_light'}
+
+
 def run():
-    register()
+    mqtt_client = build_client(f'{UNIT_ID}-pub')
+    register_with_retry()
+
     while True:
         register()
-        conf = round(random.uniform(0.6, 0.99), 2)
-        try:
-            # fetch map and only report blocked_route if the camera is on sand
+        map_data = fetch_map()
+
+        if random.random() < 0.15 and cell_is_sand(map_data, CAM_X, CAM_Y):
+            event = {
+                'unit_id': UNIT_ID,
+                'type': 'blocked_route',
+                'description': 'obstacle on path',
+                'x': CAM_X,
+                'y': CAM_Y,
+                'priority': 2,
+                'timestamp': int(time.time()),
+            }
+            publish_event(mqtt_client, UNIT_ID, event)
+            # HTTP fallback
             try:
-                with urlreq.urlopen(HOST + '/map', timeout=2) as resp:
-                    map_data = json.load(resp)
+                post_json(HOST + '/incident', event)
             except Exception:
-                map_data = None
+                pass
+            print('camera reported blocked_route via MQTT')
+        else:
+            conf = round(random.uniform(0.6, 0.99), 2)
+            event = {
+                'unit_id': UNIT_ID,
+                'type': 'person_detected',
+                'confidence': conf,
+                'x': CAM_X,
+                'y': CAM_Y,
+                'priority': 1,
+                'timestamp': int(time.time()),
+            }
+            publish_event(mqtt_client, UNIT_ID, event)
+            try:
+                post_json(HOST + '/incident', event)
+            except Exception:
+                pass
+            print('camera reported person_detected', conf, 'via MQTT')
 
-            def cell_is_sand(mx, my):
-                if not map_data:
-                    return True
-                w = map_data.get('width', 0)
-                h = map_data.get('height', 0)
-                if mx < 0 or my < 0 or mx >= w or my >= h:
-                    return False
-                idx = my * w + mx
-                return map_data.get('cells', [])[idx].get('type') in {'sand', 'sand_light'}
-
-            if random.random() < 0.15 and cell_is_sand(CAM_X, CAM_Y):
-                desc = 'obstacle on path'
-                post_json(HOST + '/incident', {
-                    'type': 'blocked_route',
-                    'description': desc,
-                    'x': CAM_X,
-                    'y': CAM_Y,
-                    'priority': 2,
-                })
-                print('camera reported blocked_route')
-            else:
-                post_json(HOST + '/incident', {
-                    'type': 'person_detected',
-                    'confidence': conf,
-                    'x': CAM_X,
-                    'y': CAM_Y,
-                    'priority': 1,
-                })
-                print('camera reported person_detected', conf)
-        except Exception as exc:
-            print('camera report failed', exc)
         time.sleep(REPORT_INTERVAL)
 
 

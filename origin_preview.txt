@@ -1,0 +1,260 @@
+﻿import json, os, socket, threading, time
+import paho.mqtt.client as mqtt
+from rpc_utils import load_grpc_support
+import dashboard as dash
+
+# Constants declarations
+MAP_FILE   = 'map.json'
+MAP_STYLE  = 'island-v2'
+MAP_W = MAP_H = 20
+MAP_VER    = 8
+RPC_TO     = 2.0
+VEHICLE_STATES = {'IDLE', 'ASSIGNED', 'BUSY', 'ERROR'}
+MQTT_BROKER = os.environ.get('MQTT_BROKER', '127.0.0.1')
+MQTT_PORT   = int(os.environ.get('MQTT_PORT', '1883'))
+DEDUP_WIN   = 15  
+STALE_LIM   = 60  
+SKIP_TYPES  = {'water_level_ok', 'supply_level'}
+ROLE_MAP    = {
+    'person_detected': 'drone',
+    'blocked_route':   'repair_rover', 'structure_damage': 'repair_rover',
+    'low_stock':       'supply_rover', 'material_request': 'supply_rover',
+}
+
+
+# ÔöÇÔöÇ helpers ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+def _int(v, default=0):
+    return int(v) if isinstance(v, (int, float)) else default
+
+def _now():
+    return int(time.time())
+
+
+# ÔöÇÔöÇ main class ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+class Leitstelle:
+    def __init__(self):
+        self.map   = self._load_map()
+        self.units = {}
+        self.incidents, self.history = [], []
+        self.active_missions, self.mission_log = {}, []
+        self.next_incident_id = self.next_mission_id = 1
+        self.lock  = threading.Lock()
+        self._dedup: dict  = {}
+        self._poslock: dict = {}
+        self.grpc, self.pb2, self.pb2_grpc = load_grpc_support(
+            os.path.dirname(os.path.abspath(__file__)))
+        threading.Thread(target=self._incident_loop, daemon=True).start()
+        threading.Thread(target=self._mqtt_loop,     daemon=True).start()
+
+    # ÔöÇÔöÇ MQTT ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+
+    def _mqtt_loop(self):
+        c = mqtt.Client(client_id='leitstelle-sub', clean_session=True)
+        c.on_connect = lambda cl, *_: (
+            cl.subscribe('sensors/events/#',     qos=1),
+            cl.subscribe('vehicles/telemetry/#', qos=0),
+            cl.subscribe('vehicles/missions/#',  qos=1),
+            print('[mqtt] subscribed'),
+        )
+        c.on_message = self._on_msg
+        c.reconnect_delay_set(2, 30)
+        for i in range(20):
+            try:
+                c.connect(MQTT_BROKER, MQTT_PORT, keepalive=30)
+                c.loop_forever(); return
+            except Exception as e:
+                print(f'[mqtt] attempt {i+1}: {e}'); time.sleep(3)
+
+    def _on_msg(self, _c, _u, msg):
+        try:
+            p = json.loads(msg.payload)
+        except Exception:
+            return
+        t = msg.topic
+        if   t.startswith('sensors/events/'):     self._on_event(p)
+        elif t.startswith('vehicles/telemetry/'): self._on_telemetry(p)
+        elif t.startswith('vehicles/missions/'):  self._on_mission(p)
+
+    def _on_event(self, p):
+        ts  = p.get('timestamp', 0)
+        if ts and (_now() - ts) > STALE_LIM:
+            return
+        key = (p.get('unit_id',''), p.get('type',''), p.get('x',0), p.get('y',0))
+        now = time.time()
+        if now - self._dedup.get(key, 0) < DEDUP_WIN:
+            return
+        self._dedup[key] = now
+        self._dedup = {k: v for k, v in self._dedup.items() if now - v < DEDUP_WIN * 2}
+
+        itype = p.get('type', '')
+        if itype in SKIP_TYPES:
+            return
+        x, y  = p.get('x', 0), p.get('y', 0)
+        pk    = (itype, x, y)
+        with self.lock:
+            if pk in self._poslock:
+                return
+            inc = {'id': self.next_incident_id, 'type': itype,
+                   'value': p.get('value', ''), 'raw': p}
+            self.next_incident_id += 1
+            self.incidents.append(inc)
+            self._poslock[pk] = inc['id']
+        print(f'[mqtt] queued {itype} @ ({x},{y})')
+
+    def _on_telemetry(self, p):
+        uid = p.get('unit_id', '')
+        if not uid: return
+        with self.lock:
+            u = self.units.setdefault(uid, {'id': uid,
+                'role': p.get('role','vehicle'), 'state': p.get('state','IDLE')})
+            u['x'] = p.get('x', u.get('x'))
+            u['y'] = p.get('y', u.get('y'))
+            if p.get('role'): u['role'] = p['role']
+            if p.get('state','') in VEHICLE_STATES: u['state'] = p['state']
+
+    def _on_mission(self, p):
+        mid, uid = p.get('mission_id',''), p.get('unit_id','')
+        state    = p.get('state','').upper()
+        if state not in {'ASSIGNED','BUSY','DONE','IDLE','ERROR'}: return
+        with self.lock:
+            if uid in self.units and state in VEHICLE_STATES:
+                self.units[uid]['state'] = state
+            m = self.active_missions.get(mid)
+            if m:
+                m['status'] = state; m['updated_at'] = _now()
+                self._log(mid, uid, state, p.get('message',''))
+                if state in {'DONE','ERROR'}:
+                    self._poslock.pop((m['incident_type'], m['target_x'], m['target_y']), None)
+                    self.active_missions.pop(mid, None)
+
+    # ÔöÇÔöÇ map ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+
+    def _cell_at(self, x, y):
+        if not (0 <= x < MAP_W and 0 <= y < MAP_H): return {'type': 'water'}
+        return self.map['cells'][y * MAP_W + x]
+
+    def _load_map(self):
+        try:
+            data = json.load(open(MAP_FILE, encoding='utf-8'))
+            if self._valid_map(data): return data
+        except Exception: pass
+        data = self._build_map()
+        json.dump(data, open(MAP_FILE, 'w', encoding='utf-8'))
+        return data
+
+    def _valid_map(self, d):
+        if not isinstance(d, dict): return False
+        if d.get('style') != MAP_STYLE or d.get('version') != MAP_VER: return False
+        if d.get('width') != MAP_W or d.get('height') != MAP_H: return False
+        cells = d.get('cells', [])
+        if len(cells) != MAP_W * MAP_H: return False
+        by_pos = {(c['x'], c['y']): c for c in cells}
+        for y in range(MAP_H):
+            for x in range(MAP_W):
+                c = by_pos.get((x, y))
+                if not c: return False
+                border = x in (0, MAP_W-1) or y in (0, MAP_H-1)
+                if border and c.get('type') != 'water': return False
+                if not border and c.get('type') not in {'sand','sand_light'}: return False
+        return any(c.get('infrastructure') == 'harbor' for c in cells)
+
+    def _build_map(self):
+        def noise(x, y): return ((x*37 + y*19 + x*y*11) % 9) / 9.0
+        cells = []
+        for y in range(MAP_H):
+            for x in range(MAP_W):
+                if x in (0, MAP_W-1) or y in (0, MAP_H-1):
+                    t = 'water'
+                else:
+                    s = abs(x-15)/5.8 + abs(y-5)/3.8 + noise(x,y)*0.42
+                    spur = x >= 17 and 5 <= y <= 9 and (x+y)%2 == 0
+                    t = 'sand' if s<=0.98 or spur else ('sand_light' if s<=1.62 else 'water')
+                cells.append({'x': x, 'y': y, 'type': t})
+        data = {'width':MAP_W,'height':MAP_H,'style':MAP_STYLE,'version':MAP_VER,'cells':cells}
+        for (x,y), name in {(14,6):'helipad',(16,7):'bridge',(14,8):'depot',
+                             (13,7):'harbor',(16,9):'charging_station'}.items():
+            data['cells'][y*MAP_W+x]['infrastructure'] = name
+        return data
+
+    # ÔöÇÔöÇ incident pipeline ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+
+    def _incident_loop(self):
+        while True:
+            inc = None
+            with self.lock:
+                if self.incidents: inc = self.incidents.pop(0)
+            if inc: self._process(inc)
+            time.sleep(1)
+
+    def _process(self, inc):
+        try:
+            raw   = inc.get('raw', {}) if isinstance(inc.get('raw'), dict) else {}
+            itype = inc.get('type', '')
+            value = (inc.get('value') or
+                     (f"confidence={raw['confidence']}"      if itype == 'person_detected'  and 'confidence'          in raw else '') or
+                     (f"level={raw['water_level_cm']}cm"     if 'water_level' in itype      and 'water_level_cm'      in raw else '') or
+                     (f"description={raw['description']}"    if itype == 'blocked_route'     and 'description'        in raw else '') or
+                     (f"level={raw['supply_level_percent']}%" if itype == 'low_stock'        and 'supply_level_percent' in raw else ''))
+            with self.lock:
+                self.history.append({'id':inc['id'],'type':itype,'value':value,'processed_at':_now()})
+            self._dispatch(inc)
+        except Exception as e:
+            print('process failed:', e)
+
+    def _dispatch(self, inc):
+        raw   = inc.get('raw', {}) if isinstance(inc.get('raw'), dict) else {}
+        itype = inc.get('type', '')
+        role  = ROLE_MAP.get(itype)
+        if not role:
+            x, y = raw.get('x'), raw.get('y')
+            if isinstance(x, int) and isinstance(y, int):
+                role = 'drone' if self._cell_at(x,y).get('type') == 'water' else None
+        if not role: return
+
+        tx, ty = _int(raw.get('x',0)), _int(raw.get('y',0))
+        pri    = _int(raw.get('priority',2), 2)
+
+        with self.lock:
+            mid  = f"mission-{self.next_mission_id}"; self.next_mission_id += 1
+            m = {'mission_id':mid,'incident_id':inc.get('id'),'incident_type':itype,
+                 'target_x':tx,'target_y':ty,'priority':pri,'required_role':role,
+                 'status':'QUEUED','assigned_unit':'','updated_at':_now()}
+            self.active_missions[mid] = m
+            self._log(mid, '', 'QUEUED', f'role={role}')
+            uid, unit = self._pick_unit(role, tx, ty)
+            if not uid:
+                m['status'] = 'ERROR'; m['updated_at'] = _now()
+                self._log(mid, '', 'ERROR', 'No matching IDLE unit found')
+                self._poslock.pop((itype, tx, ty), None); return
+            unit['state'] = 'ASSIGNED'
+            m['assigned_unit'] = uid; m['status'] = 'ASSIGNED'; m['updated_at'] = _now()
+            self._log(mid, uid, 'ASSIGNED', 'Dispatching via RPC')
+
+        ok, msg = self._assign_rpc(uid, unit, m)
+        with self.lock:
+            cur = self.active_missions.get(mid)
+            if not cur: return
+            cur['status'] = 'ASSIGNED' if ok else 'ERROR'
+            cur['updated_at'] = _now()
+            if not ok: unit['state'] = 'ERROR'
+            self._log(mid, uid, cur['status'], msg)
+
+    def _pick_unit(self, role, tx, ty):
+        for uid, u in sorted(self.units.items()):
+            if u.get('role') != role: continue
+            if u.get('state','IDLE') != 'IDLE': continue
+            if not u.get('rpc_port'): continue
+            if role != 'drone' and self._cell_at(tx,ty).get('type') == 'water': continue
+            return uid, u
+        return None, None
+
+    def _assign_rpc(self, uid, unit, m):
+        if not self.grpc: return False, 'gRPC unavailable'
+        ch = self.grpc.insecure_channel(f"{unit.get('rpc_host') or uid}:{unit['rpc_port']}")
+        try:
+            reply = self.pb2_grpc.VehicleAssignmentStub(ch).AssignMission(
+                self.pb2.AssignmentRequest(mission_id=m['mission_id'],
+                    incident_type=m['incident_type'], target_x=m['target_x'],
+                    target_y=m['target_y'], priority=m['priority']),
+                timeout=RPC_TO)
+            return reply.accepted, reply.message or ('accepted' if reply.accepted else 'rejected')

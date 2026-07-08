@@ -1,14 +1,28 @@
 services:
+  mqtt-broker:
+    image: eclipse-mosquitto:2.0
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    restart: unless-stopped
+
   leitstelle:
     build:
       context: ./leitstelle
     ports:
       - "8081:8080"
+    environment:
+      MQTT_BROKER: mqtt-broker
+      MQTT_PORT: "1883"
     volumes:
       - ./map.json:/app/map.json
       - ./leitstelle/app.py:/app/app.py
+      - ./leitstelle/dashboard.py:/app/dashboard.py
       - ./leitstelle/rpc_utils.py:/app/rpc_utils.py
       - ./leitstelle/proto:/app/proto
+    depends_on:
+      - mqtt-broker
     restart: unless-stopped
 
   sensor-camera:
@@ -16,15 +30,18 @@ services:
       context: ./sensoren
     command: ["sim_camera.py"]
     environment:
-      # Internal Docker service URL used by the simulator containers.
       LEITSTELLE: http://leitstelle:8080
+      MQTT_BROKER: mqtt-broker
+      MQTT_PORT: "1883"
       UNIT_ID: camera-1
       RPC_HOST: sensor-camera
       REPORT_INTERVAL: 10
     depends_on:
       - leitstelle
+      - mqtt-broker
     volumes:
       - ./sensoren/sim_camera.py:/app/sim_camera.py
+      - ./sensoren/mqtt_utils.py:/app/mqtt_utils.py
       - ./sensoren/rpc_utils.py:/app/rpc_utils.py
       - ./leitstelle/proto:/app/proto
     restart: unless-stopped
@@ -34,16 +51,19 @@ services:
       context: ./sensoren
     command: ["sim_water_sensor.py"]
     environment:
-      # Internal Docker service URL used by the simulator containers.
       LEITSTELLE: http://leitstelle:8080
+      MQTT_BROKER: mqtt-broker
+      MQTT_PORT: "1883"
       UNIT_ID: water-sensor-1
       WATER_X: 5
       WATER_Y: 5
       REPORT_INTERVAL: 8
     depends_on:
       - leitstelle
+      - mqtt-broker
     volumes:
       - ./sensoren/sim_water_sensor.py:/app/sim_water_sensor.py
+      - ./sensoren/mqtt_utils.py:/app/mqtt_utils.py
       - ./sensoren/rpc_utils.py:/app/rpc_utils.py
       - ./leitstelle/proto:/app/proto
     restart: unless-stopped
@@ -53,15 +73,18 @@ services:
       context: ./sensoren
     command: ["sim_drone.py"]
     environment:
-      # Internal Docker service URL used by the simulator containers.
       LEITSTELLE: http://leitstelle:8080
+      MQTT_BROKER: mqtt-broker
+      MQTT_PORT: "1883"
       UNIT_ID: drone-1
       RPC_HOST: sensor-drone
       RPC_PORT: 50051
     depends_on:
       - leitstelle
+      - mqtt-broker
     volumes:
       - ./sensoren/sim_drone.py:/app/sim_drone.py
+      - ./sensoren/mqtt_utils.py:/app/mqtt_utils.py
       - ./sensoren/rpc_utils.py:/app/rpc_utils.py
       - ./leitstelle/proto:/app/proto
     restart: unless-stopped
@@ -71,15 +94,18 @@ services:
       context: ./sensoren
     command: ["sim_repair_rover.py"]
     environment:
-      # Internal Docker service URL used by the simulator containers.
       LEITSTELLE: http://leitstelle:8080
+      MQTT_BROKER: mqtt-broker
+      MQTT_PORT: "1883"
       UNIT_ID: repair-rover-1
       RPC_HOST: sensor-water
       RPC_PORT: 50052
     depends_on:
       - leitstelle
+      - mqtt-broker
     volumes:
       - ./sensoren/sim_repair_rover.py:/app/sim_repair_rover.py
+      - ./sensoren/mqtt_utils.py:/app/mqtt_utils.py
       - ./sensoren/rpc_utils.py:/app/rpc_utils.py
       - ./leitstelle/proto:/app/proto
     restart: unless-stopped
@@ -89,15 +115,18 @@ services:
       context: ./sensoren
     command: ["sim_supply_rover.py"]
     environment:
-      # Internal Docker service URL used by the simulator containers.
       LEITSTELLE: http://leitstelle:8080
+      MQTT_BROKER: mqtt-broker
+      MQTT_PORT: "1883"
       UNIT_ID: supply-rover-1
       RPC_HOST: sensor-supply
       RPC_PORT: 50053
     depends_on:
       - leitstelle
+      - mqtt-broker
     volumes:
       - ./sensoren/sim_supply_rover.py:/app/sim_supply_rover.py
+      - ./sensoren/mqtt_utils.py:/app/mqtt_utils.py
       - ./sensoren/rpc_utils.py:/app/rpc_utils.py
       - ./leitstelle/proto:/app/proto
     restart: unless-stopped
@@ -108,14 +137,18 @@ services:
     command: ["sim_supply_sensor.py"]
     environment:
       LEITSTELLE: http://leitstelle:8080
+      MQTT_BROKER: mqtt-broker
+      MQTT_PORT: "1883"
       UNIT_ID: supply-sensor-1
       S_X: 14
       S_Y: 8
       REPORT_INTERVAL: 12
     depends_on:
       - leitstelle
+      - mqtt-broker
     volumes:
       - ./sensoren/sim_supply_sensor.py:/app/sim_supply_sensor.py
+      - ./sensoren/mqtt_utils.py:/app/mqtt_utils.py
       - ./sensoren/rpc_utils.py:/app/rpc_utils.py
       - ./leitstelle/proto:/app/proto
     restart: unless-stopped
