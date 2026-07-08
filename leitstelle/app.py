@@ -15,11 +15,30 @@ MAP_VERSION = 8
 RPC_TIMEOUT_SECONDS = 2.0
 
 VEHICLE_STATES = {'IDLE', 'ASSIGNED', 'BUSY', 'ERROR'}
+ALLOWED_ROLES = {
+    'drone', 'repair_rover', 'supply_rover',
+    'camera', 'water_sensor', 'supply_sensor',
+}
+RESOURCE_DEFINITIONS = [
+    {
+        'id': 'charging_station',
+        'name': 'Charging Station',
+        'type': 'charging_station',
+        'x': 16,
+        'y': 9,
+        'capacity': 1,
+        'description': 'Central battery recharge point for drones and rovers',
+    }
+]
+RESOURCE_USER_ROLES = {
+    'charging_station': ['drone', 'repair_rover', 'supply_rover'],
+}
 
 
 class Leitstelle:
     def __init__(self):
         self.map = self.load_map()
+        self.resources = RESOURCE_DEFINITIONS.copy()
         self.units = {}
         self.incidents = []
         self.history = []
@@ -417,8 +436,9 @@ class Leitstelle:
                 rows.append('<div style="display:flex;gap:6px;align-items:center"><div style="width:16px;height:16px;background:#2dd4bf;border:1px solid #0f766e"></div><div>WTR</div></div>')
                 rows.append('<div style="display:flex;gap:6px;align-items:center"><div style="width:16px;height:16px;background:#86efac;border:1px solid #14532d"></div><div>SUP_SENSOR</div></div>')
                 rows.append('<div style="display:flex;gap:6px;align-items:center"><div style="width:16px;height:16px;background:#c084fc;border:1px solid #5e5e5e"></div><div>DRN</div></div>')
+                rows.append('<div style="display:flex;gap:6px;align-items:center"><div style="width:16px;height:16px;background:#c94c4c;border:1px solid #7f1d1d"></div><div>CHG</div></div>')
                 rows.append('</div>')
-                rows.append(f'<p>Units: {len(self.units)} Incidents queue: {len(self.incidents)} Active missions: {len(self.active_missions)}</p>')
+                rows.append(f'<p>Units: {len(self.units)} Incidents queue: {len(self.incidents)} Active missions: {len(self.active_missions)} Resources: {len(self.resources)}</p>')
                 unit_lines = [
                     f"{uid}: role={unit.get('role', 'unit')} state={unit.get('state', 'IDLE')} @ ({unit.get('x', '?')},{unit.get('y', '?')}) rpc={unit.get('rpc_host', '?')}:{unit.get('rpc_port', '?')}"
                     for uid, unit in list(self.units.items())[:12]
@@ -441,6 +461,7 @@ class Leitstelle:
                 payload = json.dumps({
                     'units': self.units,
                     'incidents': self.incidents,
+                    'resources': self.resources,
                     'next_incident_id': self.next_incident_id,
                     'active_missions': list(self.active_missions.values()),
                     'mission_log': self.mission_log[-50:],
@@ -453,6 +474,8 @@ class Leitstelle:
                 obj = json.loads(body.decode() or '{}')
                 uid = obj.get('id') or f'unit{len(self.units)+1}'
                 role = obj.get('role', 'unit')
+                if role not in ALLOWED_ROLES:
+                    role = 'unit'
                 obj['role'] = role
                 if obj.get('state') not in VEHICLE_STATES:
                     obj['state'] = 'IDLE'
