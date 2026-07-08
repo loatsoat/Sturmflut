@@ -319,7 +319,6 @@ class Leitstelle:
                 if not c: break
                 body += c; need -= len(c)
         try:
-<<<<<<< HEAD
             if method == 'GET' and path == '/map':
                 payload = json.dumps(self.map).encode()
                 conn.sendall(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ' + str(len(payload)).encode() + b'\r\n\r\n' + payload)
