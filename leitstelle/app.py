@@ -42,6 +42,7 @@ class Leitstelle:
         self._poslock: dict = {}
         self.resource_state = {'resource_id': 'charging_station', 'state': 'IDLE', 'owner': None, 'logical_time': 0, 'node_id': None}
         self.coord_log = []
+        self.observer_mode = True
         self.grpc, self.pb2, self.pb2_grpc = load_grpc_support(
             os.path.dirname(os.path.abspath(__file__)))
         threading.Thread(target=self._incident_loop, daemon=True).start()
@@ -142,6 +143,7 @@ class Leitstelle:
                 'owner': p.get('owner'),
                 'logical_time': p.get('logical_time', 0),
                 'node_id': p.get('node_id'),
+                'observed_by': 'leitstelle',
             }
             self.coord_log.append(self.resource_state.copy())
             self.coord_log = self.coord_log[-50:]
@@ -248,6 +250,8 @@ class Leitstelle:
             unit['state'] = 'ASSIGNED'
             m['assigned_unit'] = uid; m['status'] = 'ASSIGNED'; m['updated_at'] = _now()
             self._log(mid, uid, 'ASSIGNED', 'Dispatching via RPC')
+            if self.observer_mode:
+                self._log(mid, uid, 'OBSERVED', 'Leitstelle observes mission dispatch without coordinating charging station')
 
         ok, msg = self._assign_rpc(uid, unit, m)
         with self.lock:

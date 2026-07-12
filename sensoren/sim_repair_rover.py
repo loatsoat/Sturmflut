@@ -10,6 +10,7 @@ from http_utils import post_json
 from mqtt_utils import build_client, publish_telemetry, publish_mission
 from rpc_utils import load_grpc_support
 from coordination import RicartAgrawalaCoordinator
+from communication_router import CommunicationRouter
 
 HOST = os.environ.get('LEITSTELLE', 'http://127.0.0.1:8080')
 UNIT_ID = os.environ.get('UNIT_ID', 'repair-rover-1')
@@ -30,6 +31,7 @@ GRPC, ASSIGNMENT_PB2, ASSIGNMENT_PB2_GRPC = load_grpc_support(os.path.dirname(os
 
 _mqtt = None  # set in run()
 _COORDINATOR = None
+_ROUTER = None
 
 
 def _telemetry_payload():
@@ -136,12 +138,17 @@ def send_mission_update(mission_id, state, message):
         'message': message,
         'timestamp': int(time.time()),
     }
-    if _mqtt:
-        publish_mission(_mqtt, UNIT_ID, payload)
-    try:
-        post_json(HOST + '/mission_update', payload)
-    except Exception as exc:
-        print('mission update failed', exc)
+    if _ROUTER:
+        result = _ROUTER.send('mission', payload, prefer='auto')
+        if not result.get('ok'):
+            print('mission update failed', result.get('error'))
+    else:
+        if _mqtt:
+            publish_mission(_mqtt, UNIT_ID, payload)
+        try:
+            post_json(HOST + '/mission_update', payload)
+        except Exception as exc:
+            print('mission update failed', exc)
 
 
 def simulate_repair_work(mission_id, incident_type, x, y):
@@ -210,8 +217,9 @@ def register_with_retry(retries=10, delay=3):
 
 
 def run():
-    global _mqtt, _COORDINATOR
+    global _mqtt, _COORDINATOR, _ROUTER
     _mqtt = build_client(f'{UNIT_ID}-pub')
+    _ROUTER = CommunicationRouter(mqtt_client=_mqtt, http_url=HOST)
     _COORDINATOR = RicartAgrawalaCoordinator(UNIT_ID, _mqtt, peers=[
         'drone-1', 'repair-rover-1', 'supply-rover-1',
     ])
@@ -225,7 +233,10 @@ def run():
 
     while True:
         register()
-        publish_telemetry(_mqtt, UNIT_ID, _telemetry_payload())
+        if _ROUTER:
+            _ROUTER.send('telemetry', _telemetry_payload(), prefer='auto')
+        else:
+            publish_telemetry(_mqtt, UNIT_ID, _telemetry_payload())
         time.sleep(3)
 
     rpc_server.stop(grace=0)
