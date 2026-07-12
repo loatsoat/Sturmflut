@@ -44,6 +44,11 @@ def publish_mission(client: mqtt.Client, unit_id: str, payload: dict) -> None:
     _publish(client, topic, payload, qos=1)
 
 
+def publish_coordination(client: mqtt.Client, resource_id: str, phase: str, payload: dict) -> None:
+    topic = f'vehicles/coordination/{phase}/{resource_id}'
+    _publish(client, topic, payload, qos=1)
+
+
 def _publish(client: mqtt.Client, topic: str, payload: dict, qos: int) -> None:
     try:
         msg = json.dumps(payload)

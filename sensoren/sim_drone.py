@@ -6,6 +6,7 @@ from concurrent import futures
 from http_utils import post_json
 from mqtt_utils import build_client, publish_telemetry, publish_mission
 from rpc_utils import load_grpc_support
+from coordination import RicartAgrawalaCoordinator
 
 HOST = os.environ.get('LEITSTELLE', 'http://127.0.0.1:8080')
 UNIT_ID = os.environ.get('UNIT_ID', 'drone-1')
@@ -25,6 +26,7 @@ STATE = {'value': 'IDLE'}
 GRPC, ASSIGNMENT_PB2, ASSIGNMENT_PB2_GRPC = load_grpc_support(os.path.dirname(os.path.abspath(__file__)))
 
 _mqtt = None  # set in run()
+_COORDINATOR = None
 
 
 def _telemetry_payload():
@@ -78,6 +80,8 @@ def simulate_drone_work(mission_id, incident_type, x, y):
     move_towards_target(x, y)
     time.sleep(1.2)
     send_mission_update(mission_id, 'DONE', 'inspection complete')
+    if _COORDINATOR:
+        _COORDINATOR.release_access()
     STATE['value'] = 'IDLE'
 
 
@@ -136,8 +140,12 @@ def register_with_retry(retries=10, delay=3):
 
 
 def run():
-    global _mqtt
+    global _mqtt, _COORDINATOR
     _mqtt = build_client(f'{UNIT_ID}-pub')
+    _COORDINATOR = RicartAgrawalaCoordinator(UNIT_ID, _mqtt, peers=[
+        'drone-1', 'repair-rover-1', 'supply-rover-1',
+    ])
+    _COORDINATOR.start()
     rpc_server = start_rpc_server()
     register_with_retry()
 

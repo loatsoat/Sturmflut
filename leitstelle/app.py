@@ -21,7 +21,6 @@ ROLE_MAP    = {
     'low_stock':       'supply_rover', 'material_request': 'supply_rover',
 }
 
-
 # ── helpers ───────────────────────────────────────────────────────────────────
 def _int(v, default=0):
     return int(v) if isinstance(v, (int, float)) else default
@@ -41,6 +40,8 @@ class Leitstelle:
         self.lock  = threading.Lock()
         self._dedup: dict  = {}
         self._poslock: dict = {}
+        self.resource_state = {'resource_id': 'charging_station', 'state': 'IDLE', 'owner': None, 'logical_time': 0, 'node_id': None}
+        self.coord_log = []
         self.grpc, self.pb2, self.pb2_grpc = load_grpc_support(
             os.path.dirname(os.path.abspath(__file__)))
         threading.Thread(target=self._incident_loop, daemon=True).start()
@@ -54,6 +55,7 @@ class Leitstelle:
             cl.subscribe('sensors/events/#',     qos=1),
             cl.subscribe('vehicles/telemetry/#', qos=0),
             cl.subscribe('vehicles/missions/#',  qos=1),
+            cl.subscribe('vehicles/coordination/#', qos=1),
             print('[mqtt] subscribed'),
         )
         c.on_message = self._on_msg
@@ -74,6 +76,7 @@ class Leitstelle:
         if   t.startswith('sensors/events/'):     self._on_event(p)
         elif t.startswith('vehicles/telemetry/'): self._on_telemetry(p)
         elif t.startswith('vehicles/missions/'):  self._on_mission(p)
+        elif t.startswith('vehicles/coordination/'): self._on_coordination(p)
 
     def _on_event(self, p):
         ts  = p.get('timestamp', 0)
@@ -126,6 +129,22 @@ class Leitstelle:
                 if state in {'DONE','ERROR'}:
                     self._poslock.pop((m['incident_type'], m['target_x'], m['target_y']), None)
                     self.active_missions.pop(mid, None)
+
+    def _on_coordination(self, p):
+        if not isinstance(p, dict):
+            return
+        if p.get('type') != 'state':
+            return
+        with self.lock:
+            self.resource_state = {
+                'resource_id': p.get('resource_id', 'charging_station'),
+                'state': p.get('state', 'IDLE'),
+                'owner': p.get('owner'),
+                'logical_time': p.get('logical_time', 0),
+                'node_id': p.get('node_id'),
+            }
+            self.coord_log.append(self.resource_state.copy())
+            self.coord_log = self.coord_log[-50:]
 
     # ── map ───────────────────────────────────────────────────────────────────
 
@@ -303,7 +322,9 @@ class Leitstelle:
                     'units': self.units, 'incidents': self.incidents,
                     'next_incident_id': self.next_incident_id,
                     'active_missions': list(self.active_missions.values()),
-                    'mission_log': self.mission_log[-50:]}).encode())
+                    'mission_log': self.mission_log[-50:],
+                    'resource_state': self.resource_state,
+                    'coord_log': self.coord_log[-20:]}).encode())
             elif method == 'GET'  and path == '/history':
                 self._respond(conn, '200 OK', json.dumps({'history': self.history}).encode())
             elif method == 'POST' and path == '/unit':
