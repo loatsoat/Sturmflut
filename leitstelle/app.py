@@ -110,6 +110,9 @@ class Leitstelle:
             u['y'] = p.get('y', u.get('y'))
             if p.get('role'): u['role'] = p['role']
             if p.get('state','') in VEHICLE_STATES: u['state'] = p['state']
+            # preserve rpc_host / rpc_port so _pick_unit can reach the vehicle
+            if p.get('rpc_port'): u['rpc_port'] = p['rpc_port']
+            if p.get('rpc_host'): u['rpc_host'] = p['rpc_host']
 
     def _on_mission(self, p):
         mid, uid = p.get('mission_id',''), p.get('unit_id','')

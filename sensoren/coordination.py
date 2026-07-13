@@ -1,5 +1,3 @@
-"""Ricart/Agrawala distributed mutual exclusion over MQTT."""
-
 import json
 import threading
 import time
@@ -42,9 +40,6 @@ class RicartAgrawalaCoordinator:
         print(f'[coord:{self.node_id}] started, peers={self.peers}')
 
     def request_access(self, resource_id='charging_station', timeout=30.0):
-        """Block until this node holds the resource, or timeout expires.
-        Returns True if HELD, False on timeout.
-        """
         with self._lock:
             if self.state == 'HELD':
                 return True
@@ -91,7 +86,6 @@ class RicartAgrawalaCoordinator:
         return False
 
     def release_access(self):
-        """Release the resource and send deferred replies."""
         with self._lock:
             if self.state != 'HELD':
                 return
@@ -152,14 +146,12 @@ class RicartAgrawalaCoordinator:
                 self._ready.set()
 
     def _handle_release(self, p):
-        """Handle RELEASE messages from peers."""
         if p.get('resource_id') != self.resource_id: return
         if p.get('from_node')   == self.node_id:     return
         with self._lock:
             self.logical_clock = max(self.logical_clock, int(p.get('timestamp', 0))) + 1
 
     def _i_have_priority(self, incoming):
-        """Return True if our request has higher priority than incoming."""
         if self._req is None:
             return False
         my_ts = int(self._req.get('timestamp', 0))
@@ -184,7 +176,6 @@ class RicartAgrawalaCoordinator:
         print(f'[coord:{self.node_id}] REPLY sent to {req.get("from_node")}  clock={ts}')
 
     def _publish_state(self, state):
-        """Publish observer state update for the dashboard feed."""
         publish_coordination(self._pub, self.resource_id, 'state', {
             'type':         'state',
             'resource_id':  self.resource_id,

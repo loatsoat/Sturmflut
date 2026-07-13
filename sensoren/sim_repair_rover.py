@@ -50,6 +50,8 @@ def _telemetry_payload():
         'x':         REPAIR_ROVER['x'],
         'y':         REPAIR_ROVER['y'],
         'state':     STATE['value'],
+        'rpc_host':  RPC_HOST,
+        'rpc_port':  RPC_PORT,
         'timestamp': int(time.time()),
     }
 
@@ -171,7 +173,7 @@ def run():
     nx, ny = find_nearest_land(map_data, REPAIR_ROVER['x'], REPAIR_ROVER['y'])
     REPAIR_ROVER['x'], REPAIR_ROVER['y'] = nx, ny
 
-    start_rpc_server()
+    _rpc_server = start_rpc_server()
     register_unit_with_retry(REPAIR_ROVER, HOST, 'repair rover')
 
     while True:

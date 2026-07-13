@@ -1,5 +1,3 @@
-"""Verification harness for Ricart/Agrawala charging-station coordination."""
-
 import threading
 import time
 from types import SimpleNamespace
@@ -8,7 +6,6 @@ from coordination import RicartAgrawalaCoordinator
 
 
 class SimBroker:
-    """Async in-process message bus."""
 
     def __init__(self):
         self._lock   = threading.Lock()
@@ -65,16 +62,6 @@ class SimMqttClient:
 class VerificationHarness:
 
     def _build_nodes(self, broker=None, peer_map=None):
-        """Build a set of coordinators wired to a shared SimBroker.
-
-        Each coordinator gets two SimMqttClients:
-          pub_client – used by the coordinator to publish coordination messages.
-          sub_client – dedicated subscriber so messages flow through SimBroker
-                       instead of a real MQTT broker.
-
-        peer_map (optional): dict node_id → [peer_ids]. Defaults to the
-        standard 3-node full-mesh.
-        """
         b = broker or SimBroker()
 
         node_ids = ['drone-1', 'repair-rover-1', 'supply-rover-1']
@@ -102,11 +89,6 @@ class VerificationHarness:
         return b, pub_clients, sub_clients, coords
 
     def run_safety_liveness(self):
-        """All three coordinators request access in parallel.
-
-        Safety:  never more than one HELD at a time.
-        Liveness: every node eventually acquires the resource.
-        """
         broker = SimBroker()
         _, _, _, coords = self._build_nodes(broker=broker)
         coordinators = list(coords.values())
@@ -167,13 +149,6 @@ class VerificationHarness:
         }
 
     def run_non_fifo_mode(self):
-        """Deliver messages out of order to verify correctness under non-FIFO conditions.
-
-        Real MQTT with QoS 1 does not guarantee FIFO ordering across topics.
-        This test injects an artificial delay on the first REQUEST seen by each
-        subscriber, causing a later REQUEST to be processed before an earlier one.
-        The algorithm must still produce a safe and live outcome.
-        """
         class ReorderingBroker(SimBroker):
             """Delays first REQUEST so the next one can overtake."""
 
@@ -253,10 +228,6 @@ class VerificationHarness:
         }
 
     def run_latency_smoke(self):
-        """Measure round-trip latency of the full REQUEST → REPLY → HELD cycle.
-
-        Runs RUNS uncontested acquires and checks p50 < 50 ms and p95 < 100 ms.
-        """
         RUNS = 10
 
         latencies = []

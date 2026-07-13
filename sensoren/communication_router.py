@@ -6,8 +6,6 @@ from http_utils import post_json
 
 
 class CommunicationRouter:
-    """Choose between MQTT and HTTP for vehicle message delivery."""
-
     def __init__(self, mqtt_client=None, http_url=None, max_mqtt_payload_bytes=12000):
         self.mqtt_client = mqtt_client
         self.http_url = http_url or os.environ.get('LEITSTELLE', 'http://127.0.0.1:8080')

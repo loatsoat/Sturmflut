@@ -36,7 +36,6 @@ _COORD_STATE_BORDER = {
 
 
 def _render_coord_panel(resource_state, coord_log):
-    """Observer-only panel for the Leitstelle: shows charging-station state."""
     import time as _time
 
     rs    = resource_state or {}
@@ -46,9 +45,7 @@ def _render_coord_panel(resource_state, coord_log):
     bg    = _COORD_STATE_BG.get(state,    '#f3f4f6')
     bord  = _COORD_STATE_BORDER.get(state,'2px solid #d1d5db')
 
-    # Count how many distinct nodes are currently in each state from the log
     recent = (coord_log or [])[-30:]
-    # last known state per node
     node_states = {}
     for entry in recent:
         nid = entry.get('node_id')
@@ -57,7 +54,6 @@ def _render_coord_panel(resource_state, coord_log):
     waiting_nodes = [n for n, s in node_states.items() if s == 'WAITING']
     held_nodes    = [n for n, s in node_states.items() if s == 'HELD']
 
-    # Flash animation only when something is active
     flash_style = ''
     if state in ('WAITING', 'HELD'):
         flash_style = (
@@ -69,11 +65,9 @@ def _render_coord_panel(resource_state, coord_log):
 
     active_class = 'coord-active' if state in ('WAITING', 'HELD') else ''
 
-    # Last-updated wall time
     last_updated = rs.get('_wall_time', '')
     last_updated_str = f'  –  Letzte Änderung: <strong>{last_updated}</strong>' if last_updated else ''
 
-    # Node status badges
     badge_html = ''
     for nid, nstate in sorted(node_states.items()):
         nbg   = _COORD_STATE_BG.get(nstate, '#f3f4f6')
@@ -98,13 +92,11 @@ def _render_coord_panel(resource_state, coord_log):
         f'</div>'
     )
 
-    # Node badges row
     badges_row = (
         f'<div style="margin-bottom:6px">{badge_html}</div>'
         if badge_html else ''
     )
 
-    # Queue depth indicators
     queue_info = ''
     if waiting_nodes:
         queue_info = (
@@ -140,7 +132,6 @@ def _render_coord_panel(resource_state, coord_log):
         f'white-space:pre-wrap;line-height:1.8">{log_html}</div>'
     )
 
-    # Fast-poll: fetch /status every 1s and update only the coord section via JS
     fast_poll_js = (
         '<script>'
         '(function(){'

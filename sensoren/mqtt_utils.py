@@ -11,7 +11,6 @@ _RETRY_DELAY = 2
 
 
 def build_client(client_id: str) -> mqtt.Client:
-    """Create and connect a paho MQTT client with auto-reconnect."""
     client = mqtt.Client(client_id=client_id, clean_session=True)
     client.reconnect_delay_set(min_delay=1, max_delay=16)
 

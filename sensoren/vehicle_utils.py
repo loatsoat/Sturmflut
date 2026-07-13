@@ -1,5 +1,3 @@
-"""Shared utilities for vehicle simulators (drone, repair rover, supply rover)."""
-
 import json
 import os
 import time
@@ -13,7 +11,6 @@ from mqtt_utils import publish_mission
 
 
 def send_mission_update(unit_id, host, mqtt_client, router, mission_id, state, message):
-    """Send a mission state update via router, MQTT, or HTTP fallback."""
     payload = {
         'mission_id': mission_id,
         'unit_id':    unit_id,
@@ -35,7 +32,6 @@ def send_mission_update(unit_id, host, mqtt_client, router, mission_id, state, m
 
 
 def register_unit(unit_dict, host):
-    """Fire-and-forget registration of a unit with the Leitstelle."""
     try:
         post_json(host + '/unit', unit_dict)
     except Exception:
@@ -43,7 +39,6 @@ def register_unit(unit_dict, host):
 
 
 def register_unit_with_retry(unit_dict, host, label, retries=10, delay=3):
-    """Register a unit with the Leitstelle, retrying on failure."""
     for i in range(retries):
         try:
             post_json(host + '/unit', unit_dict)
@@ -55,7 +50,6 @@ def register_unit_with_retry(unit_dict, host, label, retries=10, delay=3):
 
 
 def fetch_map_once(host):
-    """Fetch the map from the Leitstelle once. Returns None on failure."""
     try:
         with urlreq.urlopen(host + '/map', timeout=2) as resp:
             return json.load(resp)
@@ -64,10 +58,6 @@ def fetch_map_once(host):
 
 
 def find_nearest_land(map_data, sx, sy):
-    """BFS from (sx, sy) to find the nearest sand cell.
-
-    Returns (sx, sy) unchanged if the start is already on land or map is None.
-    """
     if not map_data:
         return sx, sy
 
@@ -101,11 +91,6 @@ def find_nearest_land(map_data, sx, sy):
 
 
 def start_charging_trigger_loop(unit_id, coordinator, state_dict):
-    """Connect to MQTT and listen for charging/trigger/<unit_id>.
-
-    When triggered, requests access to the charging station via the
-    Ricart/Agrawala coordinator. Intended to be run in a daemon thread.
-    """
     broker = os.environ.get('MQTT_BROKER', '127.0.0.1')
     port   = int(os.environ.get('MQTT_PORT', '1883'))
 
