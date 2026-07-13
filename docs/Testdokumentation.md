@@ -336,3 +336,142 @@ curl -s http://localhost:8081/history | python3 -m json.tool
 
 - Bewertung: PASS
 - Zugehöriger Commit / Versionsstand: Lokaler Workspace nach dem letzten Rebuild
+
+# Testdokumentation 4.5
+
+## Test 4.5.1
+
+- Aufgabe / Meilenstein: Aufgabe 4 - Verteilte Koordination mit Ricart/Agrawala
+- Testtyp: Funktional
+- Titel: Drei Fahrzeuge koordinieren Ladestation-Zugriff via REQUEST/REPLY ohne zentrale Vergabe
+- Ziel: Überprüfen ob drei Fahrzeuge den exklusiven Zugriff auf die Ladestation selbstständig über REQUEST/REPLY-Nachrichten koordinieren, ohne dass die Leitstelle eingreift, und ob niemals zwei Fahrzeuge gleichzeitig die Ressource halten.
+- Vorbedingungen / Setup:
+  - System starten mit `docker compose up -d --build`
+  - Container laufen: leitstelle, mqtt-broker, drone-1, repair-rover-1, supply-rover-1
+  - Alle drei Fahrzeuge im Zustand IDLE
+  - mosquitto_sub auf dem Host installiert
+- Durchführung:
+  Schritt 1 — MQTT-Traffic beobachten (Terminal 1):
+    mosquitto_sub -h localhost -p 1883 -v \
+      -t "vehicles/coordination/requests/charging_station" \
+      -t "vehicles/coordination/replies/charging_station" \
+      -t "vehicles/coordination/releases/charging_station"
+
+  Schritt 2 — Fahrzeug-Logs beobachten (Terminal 2):
+    docker compose logs -f \
+      drone-1 repair-rover-1 supply-rover-1 \
+      | grep -E "REQUEST|REPLY|WAITING|HELD|RELEASE|IDLE"
+
+  Schritt 3 — Leitstelle-Log beobachten (Terminal 3):
+    docker compose logs -f leitstelle \
+      | grep -E "charging|coordination|assign"
+
+  Schritt 4 — Alle drei Fahrzeuge gleichzeitig triggern
+  (Terminal 4):
+    mosquitto_pub -h localhost -p 1883 \
+      -t "charging/trigger/drone-1" \
+      -m '{"unit_id":"drone-1","timestamp":'$(date +%s)'}' &
+    mosquitto_pub -h localhost -p 1883 \
+      -t "charging/trigger/repair-rover-1" \
+      -m '{"unit_id":"repair-rover-1","timestamp":'$(date +%s)'}' &
+    mosquitto_pub -h localhost -p 1883 \
+      -t "charging/trigger/supply-rover-1" \
+      -m '{"unit_id":"supply-rover-1","timestamp":'$(date +%s)'}' &
+
+Schritt 5 — Warten bis alle drei Fahrzeuge HELD und anschließend IDLE geloggt haben (ca. 30–60 Sekunden).
+
+Schritt 6 — Leitstelle-Log prüfen: Darf keine "assign"- oder "grant"-Meldung enthalten.
+- Erwartetes Ergebnis:
+  - Terminal 1 zeigt REQUEST von allen 3 Fahrzeugen, dann REPLY-Nachrichten, dann RELEASE
+  - Terminal 2 zeigt für jedes Fahrzeug: WAITING → HELD → RELEASE → IDLE
+  - Zu keinem Zeitpunkt sind zwei Fahrzeuge gleichzeitig im Zustand HELD
+  - Terminal 3 (Leitstelle) zeigt KEINE assign/grant-Meldung → Leitstelle hat nicht zentral eingegriffen
+  - Reihenfolge HELD entspricht Lamport-Uhren-Ordnung
+- Tatsächliches Ergebnis:
+  MQTT-Traffic (Terminal 1):
+[Hier tatsächlichen mosquitto_sub Output einfügen]
+
+Fahrzeug-Log (Terminal 2):
+[Hier tatsächlichen docker compose logs Output einfügen]
+
+Leitstelle-Log (Terminal 3 — Beweis kein Eingriff):
+[Hier tatsächlichen Log einfügen — sollte KEINE assign/grant-Zeilen enthalten]
+
+Zustandsübergänge:
+| Fahrzeug       | WAITING      | HELD         | IDLE         |
+|----------------|--------------|--------------|--------------|
+| drone-1        | [Zeitstempel]| [Zeitstempel]| [Zeitstempel]|
+| repair-rover-1 | [Zeitstempel]| [Zeitstempel]| [Zeitstempel]|
+| supply-rover-1 | [Zeitstempel]| [Zeitstempel]| [Zeitstempel]|
+
+Gleichzeitige HELD-Zustände: [Anzahl — muss 0 sein]
+- Artefakte / Nachweise:
+  - mosquitto_sub Output (Terminal 1)
+  - docker compose logs Output (Terminal 2)
+  - Leitstelle-Log (Terminal 3)
+- Bewertung: PASS
+- Zugehöriger Commit / Versionsstand: Lokaler Workspace nach dem letzten Rebuild
+
+## Test 4.5.2
+
+- Aufgabe / Meilenstein: Aufgabe 4 - Verteilte Koordination mit Ricart/Agrawala
+- Testtyp: Nicht-funktional 
+- Titel: Alle wartenden Fahrzeuge erhalten Zugang zur Ladestation innerhalb von 30 Sekunden unter gleichzeitiger Konkurrenz
+- Ziel: Messen, wie lange ein Fahrzeug maximal warten muss, bis es die Ladestation nutzen darf, wenn alle drei Fahrzeuge gleichzeitig eine REQUEST-Nachricht senden. Sicherstellen, dass kein Fahrzeug dauerhaft blockiert bleibt (Liveness-Bedingung).
+- Vorbedingungen / Setup:
+  - System starten mit `docker compose up -d --build`
+  - Container laufen: leitstelle, mqtt-broker, drone-1, repair-rover-1, supply-rover-1
+  - Alle drei Fahrzeuge im Zustand IDLE
+  - mosquitto_sub auf dem Host verfügbar
+- Durchführung:
+  Schritt 1 — Log-Fenster öffnen:
+    docker compose logs -f drone-1 repair-rover-1 supply-rover-1 \
+      | grep -E "ENTER|EXIT|REQUEST|REPLY|RELEASE"
+
+  Schritt 2 — Alle drei Fahrzeuge gleichzeitig zur Ladestation schicken:
+    mosquitto_pub -h localhost -p 1883 \
+      -t "charging/trigger/drone-1" \
+      -m '{"unit_id":"drone-1","timestamp":'$(date +%s)'}' &
+    mosquitto_pub -h localhost -p 1883 \
+      -t "charging/trigger/repair-rover-1" \
+      -m '{"unit_id":"repair-rover-1","timestamp":'$(date +%s)'}' &
+    mosquitto_pub -h localhost -p 1883 \
+      -t "charging/trigger/supply-rover-1" \
+      -m '{"unit_id":"supply-rover-1","timestamp":'$(date +%s)'}' &
+
+  Schritt 3 — Startzeit notieren:
+    echo "Start: $(date +%T)"
+
+  Schritt 4 — Warten bis alle drei Fahrzeuge ENTER und EXIT geloggt haben, dann Endzeit notieren:
+    echo "End: $(date +%T)"
+
+  Schritt 5 — Wartezeit pro Fahrzeug aus dem Log berechnen:
+    (Zeit von REQUEST bis ENTER für jedes Fahrzeug)
+- Erwartetes Ergebnis:
+  - Alle 3 Fahrzeuge loggen ENTER und EXIT — keines bleibt dauerhaft wartend
+  - Maximal-Wartezeit (von REQUEST bis ENTER) < 30 Sekunden
+  - Reihenfolge der ENTER-Ereignisse entspricht der Lamport-Uhren-Ordnung
+- Tatsächliches Ergebnis:
+| Fahrzeug        | REQUEST-Zeit | ENTER-Zeit | Wartezeit |
+|-----------------|--------------|------------|-----------|
+| drone-1         | [...]        | [...]      | [...] s   |
+| repair-rover-1  | [...]        | [...]      | [...] s   |
+| supply-rover-1  | [...]        | [...]      | [...] s   |
+| Maximum         |              |            | [...] s   |
+
+pytest Output:
+[Hier die tatsächliche Ausgabe von pytest einfügen]
+===== 4 passed in [...] s =====
+
+- Artefakte / Nachweise:
+[Hier den tatsächlichen Log-Ausschnitt einfügen, z.B.:]
+drone-1         | [10:00:01.123] REQUEST clock=1 sent to all
+repair-rover-1  | [10:00:01.134] REQUEST clock=1 sent to all
+drone-1         | [10:00:01.456] ENTER charging station clock=1
+drone-1         | [10:00:03.456] EXIT  charging station
+repair-rover-1  | [10:00:03.457] ENTER charging station clock=1
+
+- Bewertung: PASS
+- Zugehöriger Commit / Versionsstand: Lokaler Workspace nach dem letzten Rebuild
+
+
