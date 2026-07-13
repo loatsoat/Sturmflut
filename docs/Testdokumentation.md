@@ -373,7 +373,8 @@ werden über MQTT (QoS 1) übertragen.
 - **Titel:** Drei Fahrzeuge koordinieren Ladestation-Zugriff via REQUEST/REPLY ohne zentrale Vergabe
 - **Ziel:** Überprüfen ob drei Fahrzeuge den exklusiven Zugriff auf die Ladestation
   selbstständig über REQUEST/REPLY-Nachrichten koordinieren, ohne dass die Leitstelle
-  eingreift, und ob niemals zwei Fahrzeuge gleichzeitig die Ressource halten.
+  eingreift, und ob niemals zwei Fahrzeuge gleichzeitig die Ressource halten (Safety)
+  und alle Fahrzeuge die Ressource schließlich erhalten (Liveness).
 
 ### Vorbedingungen / Setup
 - System starten: `docker compose up -d --build`
@@ -405,9 +406,9 @@ docker compose logs -f leitstelle | grep -E "charging|coordination|coord"
 
 **Terminal 4 – Alle drei Fahrzeuge gleichzeitig triggern:**
 ```
-mosquitto_pub -h localhost -p 1883 -t "charging/trigger/drone-1"        -m '{"unit_id":"drone-1"}' &
-mosquitto_pub -h localhost -p 1883 -t "charging/trigger/repair-rover-1" -m '{"unit_id":"repair-rover-1"}' &
-mosquitto_pub -h localhost -p 1883 -t "charging/trigger/supply-rover-1" -m '{"unit_id":"supply-rover-1"}' &
+mosquitto_pub -h localhost -p 1883 -t "charging/trigger/drone-1"        -m '{"unit_id":"drone-1"}'
+mosquitto_pub -h localhost -p 1883 -t "charging/trigger/repair-rover-1" -m '{"unit_id":"repair-rover-1"}'
+mosquitto_pub -h localhost -p 1883 -t "charging/trigger/supply-rover-1" -m '{"unit_id":"supply-rover-1"}'
 ```
 
 Schritt 5 — Warten bis alle drei Fahrzeuge ENTER und EXIT geloggt haben.
@@ -417,7 +418,8 @@ Schritt 6 — Leitstelle-Log prüfen: darf keine `assign`- oder `grant`-Meldung 
 ### Erwartetes Ergebnis
 - Terminal 1 zeigt REQUEST von allen 3 Fahrzeugen, dann REPLY-Nachrichten, dann RELEASE
 - Terminal 2: jedes Fahrzeug durchläuft WAITING → HELD (ENTER) → IDLE (EXIT)
-- Zu keinem Zeitpunkt sind zwei Fahrzeuge gleichzeitig im Zustand HELD
+- Zu keinem Zeitpunkt sind zwei Fahrzeuge gleichzeitig im Zustand HELD (Safety)
+- Alle drei Fahrzeuge erhalten die Ressource (Liveness)
 - Terminal 3 zeigt KEINE assign/grant-Meldung → Leitstelle hat nicht eingegriffen
 - Reihenfolge ENTER entspricht Lamport-Uhren-Ordnung (kleinster Timestamp zuerst)
 
@@ -450,7 +452,7 @@ Exemplarischer Log-Ausschnitt aus dem Simulator (3 parallele Threads):
 | repair-rover-1 | clock=8 → clock=8 (EXIT)         |
 | supply-rover-1 | clock=10 → clock=10 (EXIT)       |
 
-Gleichzeitige HELD-Zustände: **0** (Safety erfüllt)
+Gleichzeitige HELD-Zustände: **0** (Safety erfüllt) — Alle 3 Fahrzeuge erhalten Zugang (Liveness erfüllt)
 
 - **Bewertung:** PASS
 - **Zugehöriger Commit / Versionsstand:** Lokaler Workspace nach dem letzten Rebuild
@@ -460,25 +462,39 @@ Gleichzeitige HELD-Zustände: **0** (Safety erfüllt)
 ## Test 4.5.2
 
 - **Aufgabe / Meilenstein:** Aufgabe 4 – Verteilte Koordination mit Ricart/Agrawala
-- **Testtyp:** Nicht-funktional (Liveness)
-- **Titel:** Alle wartenden Fahrzeuge erhalten Zugang zur Ladestation innerhalb von 30 Sekunden
-- **Ziel:** Zeigen dass kein Fahrzeug dauerhaft blockiert bleibt (Liveness-Bedingung).
+- **Testtyp:** Nicht-funktional (Korrektheit unter non-FIFO Nachrichtenreihenfolge)
+- **Titel:** Algorithmus bleibt korrekt bei nicht-FIFO Nachrichtenzustellung
+- **Ziel:** Messen ob der Ricart/Agrawala-Algorithmus Safety und Liveness garantiert,
+  wenn MQTT-Nachrichten in abweichender Reihenfolge ankommen. Echtes MQTT mit QoS 1
+  garantiert keine FIFO-Ordnung über verschiedene Topics hinweg. Ein künstlich
+  verzögertes erstes REQUEST lässt ein späteres REQUEST überholen — der
+  Tie-Breaking-Mechanismus (kleinere node_id gewinnt bei gleichem Timestamp) muss
+  trotzdem zu einem korrekten Ergebnis führen.
+
+### Vorbedingungen / Setup
+- Automatisierter In-Process-Test (kein Docker erforderlich)
+- `ReorderingBroker` verzögert das erste REQUEST um 50 ms, sodass ein späteres REQUEST
+  es überholen kann
 
 ### Durchführung
-Automatisierter Test: `pytest tests/test_verification_plan.py::test_liveness_all_nodes_acquire`
+Automatisierter Test:
+```
+pytest tests/test_verification_plan.py::test_non_fifo_correctness -v
+```
 
 ### Erwartetes Ergebnis
-- Alle 3 Fahrzeuge loggen ENTER und EXIT
-- Wartezeit von REQUEST bis ENTER < 30 Sekunden
+- Safety: zu keinem Zeitpunkt mehr als ein Fahrzeug im Zustand HELD
+- Liveness: alle drei Fahrzeuge erhalten die Ressource trotz Umordnung
+- Keine Timeouts
 
 ### Tatsächliches Ergebnis
 ```
-tests/test_verification_plan.py::test_liveness_all_nodes_acquire PASSED
+tests/test_verification_plan.py::test_non_fifo_correctness PASSED
 ```
 
 Alle drei Fahrzeuge `['drone-1', 'repair-rover-1', 'supply-rover-1']` haben die
-Ladestation erfolgreich genutzt. Maximale Wartezeit < 1 Sekunde (Simulation ohne
-Netzwerk-Overhead).
+Ladestation trotz nicht-FIFO Zustellung korrekt koordiniert.
+Gleichzeitige HELD-Zustände: **0** — Safety und Liveness erfüllt.
 
 - **Bewertung:** PASS
 - **Zugehöriger Commit / Versionsstand:** Lokaler Workspace nach dem letzten Rebuild
@@ -487,62 +503,60 @@ Netzwerk-Overhead).
 
 ## Test 4.5.3
 
-- **Aufgabe / Meilenstein:** Aufgabe 4 – Fehlerbetrachtung: Nachrichtenausfall
-- **Testtyp:** Funktional (Fehlerbetrachtung)
-- **Titel:** Nachrichtenausfall (alle REPLY-Nachrichten werden verworfen) → graceful Timeout
-- **Ziel:** Zeigen dass ein Fahrzeug, das keine REPLY-Nachrichten erhält, nach Ablauf
-  des Timeouts in den Zustand IDLE zurückkehrt und nicht dauerhaft blockiert.
+- **Aufgabe / Meilenstein:** Aufgabe 4 – Verteilte Koordination mit Ricart/Agrawala
+- **Testtyp:** Nicht-funktional (Performance / Latenz-Smoke-Test)
+- **Titel:** REQUEST → REPLY Zyklus-Latenz unter Schwellenwert (p50 < 50 ms, p95 < 100 ms)
+- **Ziel:** Messen ob die Latenz des vollständigen REQUEST → REPLY → HELD Zyklus für
+  einen einzelnen unbestrittenen Zugriff konsistent unter den definierten Schwellenwerten
+  liegt. Dieser Smoke-Test stellt sicher, dass die In-Process-Simulation (und damit der
+  Kern des Algorithmus ohne Netzwerk-Overhead) performant genug ist, um in der Praxis
+  nicht zum Engpass zu werden.
+
+### Vorbedingungen / Setup
+- Automatisierter In-Process-Test (kein Docker erforderlich)
+- 10 Wiederholungen, jedes Mal frischer `SimBroker` und frische Koordinatoren
+- Gemessen wird: Zeit von `request_access()` bis `HELD`-Zustand (inkl. REPLY-Roundtrip)
+
+### Schwellenwerte
+
+| Metrik | Schwellenwert |
+|--------|---------------|
+| p50 (Median) | < 50 ms |
+| p95 | < 100 ms |
+| Timeouts | 0 von 10 Läufen |
 
 ### Durchführung
-Automatisierter Test: `pytest tests/test_verification_plan.py::test_failure_mode_timeout_and_recovery`
-
-Der Test injiziert einen `LossyBroker`, der alle Nachrichten auf dem Topic
-`vehicles/coordination/replies/charging_station` verwirft.
+Automatisierter Test:
+```
+pytest tests/test_verification_plan.py::test_latency_smoke -v
+```
 
 ### Erwartetes Ergebnis
-- `request_access()` gibt `False` zurück (Timeout)
-- Endzustand des Knotens: `IDLE`
-- Mindestens eine Nachricht wurde verworfen
+- 0 Timeouts in 10 Läufen
+- p50 < 50 ms
+- p95 < 100 ms
 
 ### Tatsächliches Ergebnis
 ```
-tests/test_verification_plan.py::test_failure_mode_timeout_and_recovery PASSED
-failure_ok=True, final_state=IDLE, dropped_messages>0
+tests/test_verification_plan.py::test_latency_smoke PASSED
 ```
 
-- **Bewertung:** PASS
-- **Zugehöriger Commit / Versionsstand:** Lokaler Workspace nach dem letzten Rebuild
+| Lauf | Latenz (ms) |
+|------|-------------|
+| 1    | 2.24        |
+| 2    | 2.26        |
+| 3    | 2.27        |
+| 4    | 2.30        |
+| 5    | 2.35        |
+| 6    | 2.37        |
+| 7    | 2.57        |
+| 8    | 2.63        |
+| 9    | 2.72        |
+| 10   | 2.87        |
 
----
-
-## Test 4.5.4
-
-- **Aufgabe / Meilenstein:** Aufgabe 4 – Fehlerbetrachtung: Prozessabsturz
-- **Testtyp:** Funktional (Fehlerbetrachtung)
-- **Titel:** Ein Peer antwortet nicht (Absturz) → überlebende Fahrzeuge bleiben nicht dauerhaft blockiert
-- **Ziel:** Zeigen dass nach dem Absturz eines Peers (supply-rover-1 sendet keine REPLYs)
-  das wartende Fahrzeug (drone-1) korrekt einen Timeout erhält und ein anderes
-  überlebendes Fahrzeug (repair-rover-1, mit nur einem Peer konfiguriert) die
-  Ladestation dennoch nutzen kann.
-
-### Durchführung
-Automatisierter Test: `pytest tests/test_verification_plan.py::test_crash_mode_surviving_peer_unblocked`
-
-supply-rover-1's `publish`-Funktion für REPLY-Nachrichten wird stumm geschaltet.
-drone-1 erwartet 2 Replies, erhält aber nur 1 → Timeout nach 1,5 s.
-drone-1 leert beim Timeout seinen `_deferred`-Queue → repair-rover-1 erhält drone-1s Reply.
-repair-rover-1 (nur 1 Peer konfiguriert: drone-1) erhält die 1 notwendige Reply → HELD.
-
-### Erwartetes Ergebnis
-- `drone-1`: `request_access()` → `False` (Timeout), Endzustand `IDLE`
-- `repair-rover-1`: `request_access()` → `True`, kann Ladestation nutzen
-
-### Tatsächliches Ergebnis
-```
-tests/test_verification_plan.py::test_crash_mode_surviving_peer_unblocked PASSED
-crash_drone_timed_out=True, surviving_peer_acquired=True,
-drone_final_state=IDLE, repair_rover_final_state=IDLE
-```
+- Timeouts: **0 / 10**
+- p50: **2.37 ms** (Schwellenwert: < 50 ms) ✓
+- p95: **2.87 ms** (Schwellenwert: < 100 ms) ✓
 
 - **Bewertung:** PASS
 - **Zugehöriger Commit / Versionsstand:** Lokaler Workspace nach dem letzten Rebuild
@@ -553,14 +567,12 @@ drone_final_state=IDLE, repair_rover_final_state=IDLE
 
 ```
 ============================= test session starts =============================
-platform win32 -- Python 3.13.4, pytest-9.0.1
-collected 5 items
+platform win32 -- Python 3.13.4, pytest-9.1.1, pluggy-1.6.0
+collected 3 items
 
-tests/test_verification_plan.py::test_verification_plan_reports_expected_outcomes PASSED [ 20%]
-tests/test_verification_plan.py::test_safety_with_concurrent_requests          PASSED [ 40%]
-tests/test_verification_plan.py::test_liveness_all_nodes_acquire                PASSED [ 60%]
-tests/test_verification_plan.py::test_failure_mode_timeout_and_recovery         PASSED [ 80%]
-tests/test_verification_plan.py::test_crash_mode_surviving_peer_unblocked       PASSED [100%]
+tests/test_verification_plan.py::test_safety_with_concurrent_requests PASSED [ 33%]
+tests/test_verification_plan.py::test_non_fifo_correctness             PASSED [ 66%]
+tests/test_verification_plan.py::test_latency_smoke                    PASSED [100%]
 
-============================== 5 passed in 6.22s ==============================
+============================== 3 passed in 0.54s ==============================
 ```

@@ -1,5 +1,3 @@
-"""Verification harness for Ricart/Agrawala charging-station coordination."""
-
 import threading
 import time
 from types import SimpleNamespace
@@ -65,17 +63,6 @@ class SimMqttClient:
 class VerificationHarness:
 
     def _build_nodes(self, broker=None, peer_map=None):
-        """Build a set of coordinators wired to a shared SimBroker.
-
-        Each coordinator gets TWO SimMqttClients:
-          pub_client  – used by the coordinator to publish coordination messages.
-          sub_client  – dedicated subscriber injected into start() so that
-                        messages flow through the SimBroker instead of a real
-                        MQTT broker.
-
-        peer_map (optional): dict node_id → [peer_ids].  Defaults to the
-        standard 3-node full-mesh.
-        """
         b = broker or SimBroker()
 
         node_ids = ['drone-1', 'repair-rover-1', 'supply-rover-1']
@@ -103,11 +90,6 @@ class VerificationHarness:
         return b, pub_clients, sub_clients, coords
 
     def run_safety_liveness(self):
-        """All three coordinators request access IN PARALLEL.
-        Safety: never more than one HELD at a time (verified via the shared
-                SimBroker observer, not via an external lock that would race).
-        Liveness: every node eventually acquires the resource.
-        """
         broker = SimBroker()
         _, _, _, coords = self._build_nodes(broker=broker)
         coordinators = list(coords.values())
@@ -117,7 +99,6 @@ class VerificationHarness:
         safety_errors   = []
 
         def _observe():
-            """Poll coordinator states every millisecond for up to 15 seconds."""
             deadline = time.time() + 15
             while time.time() < deadline:
                 held = [c for c in coordinators if c.state == 'HELD']
@@ -174,7 +155,6 @@ class VerificationHarness:
         }
 
     def run_failure_mode(self):
-        """Drop all REPLY messages.  The requesting node must time out gracefully."""
 
         class LossyBroker(SimBroker):
             def __init__(self, drop_topic_prefix):
@@ -201,18 +181,6 @@ class VerificationHarness:
         }
 
     def run_non_fifo_mode(self):
-        """Deliver messages out of order (non-FIFO) to verify correctness.
-
-        Real MQTT with QoS 1 does not guarantee FIFO ordering across topics or
-        even within a topic under network conditions.  This test simulates that
-        by injecting an artificial delay on the *first* REQUEST seen by each
-        subscriber, causing a later REQUEST to be processed before an earlier
-        one.
-
-        The algorithm must still be correct: the tie-breaking rule
-        (smaller node_id wins when timestamps are equal) must produce a safe
-        and live outcome regardless of delivery order.
-        """
         import threading as _threading
 
         class ReorderingBroker(SimBroker):
@@ -297,17 +265,6 @@ class VerificationHarness:
         }
 
     def run_crash_mode(self):
-        """supply-rover-1 crashes (its REPLY traffic is silenced).
-
-        - drone-1 expects 2 replies but only gets 1 → times out gracefully.
-        - repair-rover-1 is configured with only drone-1 as its peer (the
-          one that is alive after drone-1's timeout sends deferred replies).
-          It must therefore be able to acquire the resource.
-
-        This models the real-world property: after a timeout, the timed-out
-        node flushes its deferred queue so surviving nodes are not permanently
-        blocked.
-        """
         broker = SimBroker()
 
         peer_map = {
@@ -340,6 +297,42 @@ class VerificationHarness:
         }
 
 
+    def run_latency_smoke(self):
+        RUNS = 10
+
+        latencies = []
+        timeouts  = 0
+
+        for _ in range(RUNS):
+            broker = SimBroker()
+            _, _, _, coords = self._build_nodes(broker=broker)
+            coord = coords['drone-1']
+
+            t0 = time.perf_counter()
+            ok = coord.request_access(timeout=5.0)
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+
+            if ok:
+                coord.release_access()
+                latencies.append(elapsed_ms)
+            else:
+                timeouts += 1
+
+        latencies.sort()
+        n = len(latencies)
+        p50 = latencies[int(n * 0.50)] if n else float('inf')
+        p95 = latencies[int(n * 0.95)] if n else float('inf')
+
+        return {
+            'runs':         RUNS,
+            'timeouts':     timeouts,
+            'p50_ms':       round(p50, 2),
+            'p95_ms':       round(p95, 2),
+            'all_ms':       [round(x, 2) for x in latencies],
+            'latency_ok':   timeouts == 0 and p50 < 50 and p95 < 100,
+        }
+
+
 def run_verification_plan():
     harness = VerificationHarness()
     return {
@@ -347,4 +340,5 @@ def run_verification_plan():
         'failure_mode':    harness.run_failure_mode(),
         'crash_mode':      harness.run_crash_mode(),
         'non_fifo_mode':   harness.run_non_fifo_mode(),
+        'latency_smoke':   harness.run_latency_smoke(),
     }
