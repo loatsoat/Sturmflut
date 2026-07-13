@@ -131,14 +131,17 @@ class Leitstelle:
             return
         if p.get('type') != 'state':
             return
+        import datetime as _dt
+        wall = _dt.datetime.now().strftime('%H:%M:%S')
         with self.lock:
             self.resource_state = {
-                'resource_id': p.get('resource_id', 'charging_station'),
-                'state': p.get('state', 'IDLE'),
-                'owner': p.get('owner'),
+                'resource_id':  p.get('resource_id', 'charging_station'),
+                'state':        p.get('state', 'IDLE'),
+                'owner':        p.get('owner'),
                 'logical_time': p.get('logical_time', 0),
-                'node_id': p.get('node_id'),
-                'observed_by': 'leitstelle',
+                'node_id':      p.get('node_id'),
+                'observed_by':  'leitstelle',
+                '_wall_time':   wall,
             }
             self.coord_log.append(self.resource_state.copy())
             self.coord_log = self.coord_log[-50:]

@@ -42,6 +42,7 @@ services:
     volumes:
       - ./sensoren/sim_camera.py:/app/sim_camera.py
       - ./sensoren/mqtt_utils.py:/app/mqtt_utils.py
+      - ./sensoren/http_utils.py:/app/http_utils.py
       - ./sensoren/rpc_utils.py:/app/rpc_utils.py
       - ./leitstelle/proto:/app/proto
     restart: unless-stopped
@@ -64,6 +65,7 @@ services:
     volumes:
       - ./sensoren/sim_water_sensor.py:/app/sim_water_sensor.py
       - ./sensoren/mqtt_utils.py:/app/mqtt_utils.py
+      - ./sensoren/http_utils.py:/app/http_utils.py
       - ./sensoren/rpc_utils.py:/app/rpc_utils.py
       - ./leitstelle/proto:/app/proto
     restart: unless-stopped
@@ -84,8 +86,12 @@ services:
       - mqtt-broker
     volumes:
       - ./sensoren/sim_drone.py:/app/sim_drone.py
+      - ./sensoren/vehicle_utils.py:/app/vehicle_utils.py
       - ./sensoren/mqtt_utils.py:/app/mqtt_utils.py
+      - ./sensoren/http_utils.py:/app/http_utils.py
       - ./sensoren/rpc_utils.py:/app/rpc_utils.py
+      - ./sensoren/coordination.py:/app/coordination.py
+      - ./sensoren/communication_router.py:/app/communication_router.py
       - ./leitstelle/proto:/app/proto
     restart: unless-stopped
 
@@ -105,8 +111,12 @@ services:
       - mqtt-broker
     volumes:
       - ./sensoren/sim_repair_rover.py:/app/sim_repair_rover.py
+      - ./sensoren/vehicle_utils.py:/app/vehicle_utils.py
       - ./sensoren/mqtt_utils.py:/app/mqtt_utils.py
+      - ./sensoren/http_utils.py:/app/http_utils.py
       - ./sensoren/rpc_utils.py:/app/rpc_utils.py
+      - ./sensoren/coordination.py:/app/coordination.py
+      - ./sensoren/communication_router.py:/app/communication_router.py
       - ./leitstelle/proto:/app/proto
     restart: unless-stopped
 
@@ -126,8 +136,12 @@ services:
       - mqtt-broker
     volumes:
       - ./sensoren/sim_supply_rover.py:/app/sim_supply_rover.py
+      - ./sensoren/vehicle_utils.py:/app/vehicle_utils.py
       - ./sensoren/mqtt_utils.py:/app/mqtt_utils.py
+      - ./sensoren/http_utils.py:/app/http_utils.py
       - ./sensoren/rpc_utils.py:/app/rpc_utils.py
+      - ./sensoren/coordination.py:/app/coordination.py
+      - ./sensoren/communication_router.py:/app/communication_router.py
       - ./leitstelle/proto:/app/proto
     restart: unless-stopped
 
@@ -149,6 +163,7 @@ services:
     volumes:
       - ./sensoren/sim_supply_sensor.py:/app/sim_supply_sensor.py
       - ./sensoren/mqtt_utils.py:/app/mqtt_utils.py
+      - ./sensoren/http_utils.py:/app/http_utils.py
       - ./sensoren/rpc_utils.py:/app/rpc_utils.py
       - ./leitstelle/proto:/app/proto
     restart: unless-stopped
