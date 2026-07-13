@@ -2,47 +2,73 @@ import json
 import os
 import threading
 import time
-from collections import deque
 from concurrent import futures
 from urllib import request as urlreq
 
-from http_utils import post_json
-from mqtt_utils import build_client, publish_telemetry, publish_mission
-from rpc_utils import load_grpc_support
-from coordination import RicartAgrawalaCoordinator
 from communication_router import CommunicationRouter
+from coordination import RicartAgrawalaCoordinator
+from http_utils import post_json
+from mqtt_utils import build_client, publish_telemetry
+from rpc_utils import load_grpc_support
+from vehicle_utils import (
+    fetch_map_once,
+    find_nearest_land,
+    register_unit,
+    register_unit_with_retry,
+    send_mission_update,
+    start_charging_trigger_loop,
+)
 
-HOST = os.environ.get('LEITSTELLE', 'http://127.0.0.1:8080')
-UNIT_ID = os.environ.get('UNIT_ID', 'supply-rover-1')
+HOST     = os.environ.get('LEITSTELLE', 'http://127.0.0.1:8080')
+UNIT_ID  = os.environ.get('UNIT_ID', 'supply-rover-1')
 RPC_HOST = os.environ.get('RPC_HOST', '127.0.0.1')
 RPC_PORT = int(os.environ.get('RPC_PORT', '50053'))
 
 SUPPLY_ROVER = {
-    'id': UNIT_ID,
-    'role': 'supply_rover',
-    'x': 11,
-    'y': 10,
+    'id':       UNIT_ID,
+    'role':     'supply_rover',
+    'x':        11,
+    'y':        10,
     'rpc_host': RPC_HOST,
     'rpc_port': RPC_PORT,
-    'state': 'IDLE',
+    'state':    'IDLE',
 }
 STATE = {'value': 'IDLE'}
-GRPC, ASSIGNMENT_PB2, ASSIGNMENT_PB2_GRPC = load_grpc_support(os.path.dirname(os.path.abspath(__file__)))
+GRPC, ASSIGNMENT_PB2, ASSIGNMENT_PB2_GRPC = load_grpc_support(
+    os.path.dirname(os.path.abspath(__file__))
+)
 
-_mqtt = None
+_mqtt        = None
 _COORDINATOR = None
-_ROUTER = None
+_ROUTER      = None
 
 
 def _telemetry_payload():
     return {
-        'unit_id': UNIT_ID,
-        'role': 'supply_rover',
-        'x': SUPPLY_ROVER['x'],
-        'y': SUPPLY_ROVER['y'],
-        'state': STATE['value'],
+        'unit_id':   UNIT_ID,
+        'role':      'supply_rover',
+        'x':         SUPPLY_ROVER['x'],
+        'y':         SUPPLY_ROVER['y'],
+        'state':     STATE['value'],
         'timestamp': int(time.time()),
     }
+
+
+def _send_update(mission_id, state, message):
+    send_mission_update(UNIT_ID, HOST, _mqtt, _ROUTER, mission_id, state, message)
+
+
+def _cell_type_at(map_data, mx, my):
+    if not map_data:
+        return None
+    w = map_data.get('width', 0)
+    h = map_data.get('height', 0)
+    if mx < 0 or my < 0 or mx >= w or my >= h:
+        return 'water'
+    try:
+        return map_data.get('cells', [])[my * w + mx].get('type')
+    except Exception:
+        return None
 
 
 def move_towards_target(target_x, target_y, mission_id=None):
@@ -51,17 +77,6 @@ def move_towards_target(target_x, target_y, mission_id=None):
             map_data = json.load(resp)
     except Exception:
         map_data = None
-
-    def cell_type_at(mx, my):
-        if not map_data:
-            return None
-        if mx < 0 or my < 0 or mx >= map_data.get('width', 0) or my >= map_data.get('height', 0):
-            return 'water'
-        idx = my * map_data.get('width') + mx
-        try:
-            return map_data.get('cells', [])[idx].get('type')
-        except Exception:
-            return None
 
     while SUPPLY_ROVER['x'] != target_x or SUPPLY_ROVER['y'] != target_y:
         next_x = SUPPLY_ROVER['x']
@@ -75,88 +90,26 @@ def move_towards_target(target_x, target_y, mission_id=None):
         elif SUPPLY_ROVER['y'] > target_y:
             next_y -= 1
 
-        next_type = cell_type_at(next_x, next_y)
-        if next_type == 'water':
-            send_mission_update(mission_id or '', 'ERROR', f'blocked by water at ({next_x},{next_y})')
+        if _cell_type_at(map_data, next_x, next_y) == 'water':
+            _send_update(mission_id or '', 'ERROR', f'blocked by water at ({next_x},{next_y})')
             STATE['value'] = 'IDLE'
             return
 
         SUPPLY_ROVER['x'] = next_x
         SUPPLY_ROVER['y'] = next_y
-        register()
+        SUPPLY_ROVER['state'] = STATE['value']
+        register_unit(SUPPLY_ROVER, HOST)
         if _mqtt:
             publish_telemetry(_mqtt, UNIT_ID, _telemetry_payload())
         time.sleep(0.5)
 
 
-def fetch_map_once():
-    try:
-        with urlreq.urlopen(HOST + '/map', timeout=2) as resp:
-            return json.load(resp)
-    except Exception:
-        return None
-
-
-def find_nearest_land(map_data, sx, sy):
-    if not map_data:
-        return sx, sy
-    w = map_data.get('width', 0)
-    h = map_data.get('height', 0)
-    cells = map_data.get('cells', [])
-
-    def cell_type(mx, my):
-        if mx < 0 or my < 0 or mx >= w or my >= h:
-            return 'water'
-        idx = my * w + mx
-        return cells[idx].get('type')
-
-    if cell_type(sx, sy) != 'water':
-        return sx, sy
-
-    q = deque([(sx, sy)])
-    seen = {(sx, sy)}
-    while q:
-        x, y = q.popleft()
-        for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
-            if (nx, ny) in seen:
-                continue
-            seen.add((nx, ny))
-            if nx < 0 or ny < 0 or nx >= w or ny >= h:
-                continue
-            t = cell_type(nx, ny)
-            if t in {'sand', 'sand_light'}:
-                return nx, ny
-            q.append((nx, ny))
-    return sx, sy
-
-
-def send_mission_update(mission_id, state, message):
-    payload = {
-        'mission_id': mission_id,
-        'unit_id': UNIT_ID,
-        'state': state,
-        'message': message,
-        'timestamp': int(time.time()),
-    }
-    if _ROUTER:
-        result = _ROUTER.send('mission', payload, prefer='auto')
-        if not result.get('ok'):
-            print('mission update failed', result.get('error'))
-    else:
-        if _mqtt:
-            publish_mission(_mqtt, UNIT_ID, payload)
-        try:
-            post_json(HOST + '/mission_update', payload)
-        except Exception as exc:
-            print('mission update failed', exc)
-
-
 def simulate_supply_work(mission_id, incident_type, x, y):
     STATE['value'] = 'BUSY'
-    send_mission_update(mission_id, 'BUSY', f'supply rover delivering to ({x},{y}) for {incident_type}')
+    _send_update(mission_id, 'BUSY', f'supply rover delivering to ({x},{y}) for {incident_type}')
     move_towards_target(x, y, mission_id)
     time.sleep(1.8)
-    send_mission_update(mission_id, 'DONE', 'delivery complete')
+    _send_update(mission_id, 'DONE', 'delivery complete')
     if _COORDINATOR:
         ok = _COORDINATOR.request_access('charging_station', timeout=30.0)
         if ok:
@@ -174,7 +127,7 @@ class SupplyAssignmentService(ASSIGNMENT_PB2_GRPC.VehicleAssignmentServicer):
                 vehicle_state=STATE['value'],
             )
         STATE['value'] = 'ASSIGNED'
-        send_mission_update(request.mission_id, 'ASSIGNED', 'supply rover accepted mission')
+        _send_update(request.mission_id, 'ASSIGNED', 'supply rover accepted mission')
         threading.Thread(
             target=simulate_supply_work,
             args=(request.mission_id, request.incident_type, request.target_x, request.target_y),
@@ -199,80 +152,36 @@ def start_rpc_server():
     return server
 
 
-def register():
-    try:
-        SUPPLY_ROVER['state'] = STATE['value']
-        post_json(HOST + '/unit', SUPPLY_ROVER)
-    except Exception:
-        pass
-
-
-def register_with_retry(retries=10, delay=3):
-    for i in range(retries):
-        try:
-            SUPPLY_ROVER['state'] = STATE['value']
-            post_json(HOST + '/unit', SUPPLY_ROVER)
-            print('supply rover registered')
-            return
-        except Exception as exc:
-            print(f'supply rover register attempt {i+1} failed: {exc}')
-            time.sleep(delay)
-
-
-def _trigger_charging_loop():
-    """Listen on charging/trigger/<UNIT_ID> so tests can force a charging
-    request without needing a full mission cycle."""
-    import paho.mqtt.client as paho_mqtt
-    client = paho_mqtt.Client(client_id=f'{UNIT_ID}-trigger-sub', clean_session=True)
-
-    def on_message(_c, _u, msg):
-        if _COORDINATOR and STATE['value'] == 'IDLE':
-            print(f'[{UNIT_ID}] charging trigger received, requesting access')
-            ok = _COORDINATOR.request_access('charging_station', timeout=30.0)
-            if ok:
-                time.sleep(2.0)
-                _COORDINATOR.release_access()
-
-    client.on_message = on_message
-    client.on_connect = lambda c, *_: c.subscribe(f'charging/trigger/{UNIT_ID}', qos=1)
-    import os as _os
-    broker = _os.environ.get('MQTT_BROKER', '127.0.0.1')
-    port = int(_os.environ.get('MQTT_PORT', '1883'))
-    for _ in range(10):
-        try:
-            client.connect(broker, port, keepalive=30)
-            client.loop_forever()
-            return
-        except Exception as exc:
-            print(f'[{UNIT_ID}] trigger-sub connect failed: {exc}')
-            time.sleep(2)
-
-
 def run():
     global _mqtt, _COORDINATOR, _ROUTER
-    _mqtt = build_client(f'{UNIT_ID}-pub')
-    _ROUTER = CommunicationRouter(mqtt_client=_mqtt, http_url=HOST)
+    _mqtt        = build_client(f'{UNIT_ID}-pub')
+    _ROUTER      = CommunicationRouter(mqtt_client=_mqtt, http_url=HOST)
     _COORDINATOR = RicartAgrawalaCoordinator(UNIT_ID, _mqtt, peers=[
         'drone-1', 'repair-rover-1', 'supply-rover-1',
     ])
     _COORDINATOR.start()
-    threading.Thread(target=_trigger_charging_loop, daemon=True).start()
-    rpc_server = start_rpc_server()
-    map_data = fetch_map_once()
+
+    threading.Thread(
+        target=start_charging_trigger_loop,
+        args=(UNIT_ID, _COORDINATOR, STATE),
+        daemon=True,
+    ).start()
+
+    map_data = fetch_map_once(HOST)
     nx, ny = find_nearest_land(map_data, SUPPLY_ROVER['x'], SUPPLY_ROVER['y'])
-    SUPPLY_ROVER['x'] = nx
-    SUPPLY_ROVER['y'] = ny
-    register_with_retry()
+    SUPPLY_ROVER['x'], SUPPLY_ROVER['y'] = nx, ny
+
+    start_rpc_server()
+    register_unit_with_retry(SUPPLY_ROVER, HOST, 'supply rover')
 
     while True:
-        register()
+        SUPPLY_ROVER['state'] = STATE['value']
+        register_unit(SUPPLY_ROVER, HOST)
         if _ROUTER:
             _ROUTER.send('telemetry', _telemetry_payload(), prefer='auto')
         else:
             publish_telemetry(_mqtt, UNIT_ID, _telemetry_payload())
         time.sleep(4)
-
-    rpc_server.stop(grace=0)
 
 
 if __name__ == '__main__':

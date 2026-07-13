@@ -1,7 +1,6 @@
 """Ricart/Agrawala distributed mutual exclusion over MQTT."""
 
 import json
-import os
 import threading
 import time
 
