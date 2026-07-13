@@ -11,6 +11,7 @@ from mqtt_utils import publish_mission
 
 
 def send_mission_update(unit_id, host, mqtt_client, router, mission_id, state, message):
+    # 4.3 – mission update sends via router or MQTT
     payload = {
         'mission_id': mission_id,
         'unit_id':    unit_id,
@@ -91,6 +92,7 @@ def find_nearest_land(map_data, sx, sy):
 
 
 def start_charging_trigger_loop(unit_id, coordinator, state_dict):
+    # 4.4 – charging trigger subscribes, coordinator access requests
     broker = os.environ.get('MQTT_BROKER', '127.0.0.1')
     port   = int(os.environ.get('MQTT_PORT', '1883'))
 

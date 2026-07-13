@@ -46,11 +46,13 @@ class Leitstelle:
         threading.Thread(target=self._mqtt_loop,     daemon=True).start()
 
     def _mqtt_loop(self):
+        # 4.3 – broker connects, topics subscribe
         c = mqtt.Client(client_id='leitstelle-sub', clean_session=True)
         c.on_connect = lambda cl, *_: (
             cl.subscribe('sensors/events/#',     qos=1),
             cl.subscribe('vehicles/telemetry/#', qos=0),
             cl.subscribe('vehicles/missions/#',  qos=1),
+            # 4.4 – coordination state observes
             cl.subscribe('vehicles/coordination/#', qos=1),
             print('[mqtt] subscribed'),
         )
@@ -69,12 +71,15 @@ class Leitstelle:
         except Exception:
             return
         t = msg.topic
+        # 4.3 – topic routes message
         if   t.startswith('sensors/events/'):     self._on_event(p)
         elif t.startswith('vehicles/telemetry/'): self._on_telemetry(p)
         elif t.startswith('vehicles/missions/'):  self._on_mission(p)
+        # 4.4 – coordination message receives
         elif t.startswith('vehicles/coordination/'): self._on_coordination(p)
 
     def _on_event(self, p):
+        # 4.3 – event deduplicates, stale messages filters
         ts  = p.get('timestamp', 0)
         if ts and (_now() - ts) > STALE_LIM:
             return
@@ -101,6 +106,7 @@ class Leitstelle:
         print(f'[mqtt] queued {itype} @ ({x},{y})')
 
     def _on_telemetry(self, p):
+        # 4.3 – telemetry updates unit position and state
         uid = p.get('unit_id', '')
         if not uid: return
         with self.lock:
@@ -115,6 +121,7 @@ class Leitstelle:
             if p.get('rpc_host'): u['rpc_host'] = p['rpc_host']
 
     def _on_mission(self, p):
+        # 4.3 – mission status updates, active missions tracks
         mid, uid = p.get('mission_id',''), p.get('unit_id','')
         state    = p.get('state','').upper()
         if state not in {'ASSIGNED','BUSY','DONE','IDLE','ERROR'}: return
@@ -130,6 +137,7 @@ class Leitstelle:
                     self.active_missions.pop(mid, None)
 
     def _on_coordination(self, p):
+        # 4.4 – Ricart/Agrawala state observes, dashboard updates
         if not isinstance(p, dict):
             return
         if p.get('type') != 'state':

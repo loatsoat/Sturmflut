@@ -29,21 +29,25 @@ def build_client(client_id: str) -> mqtt.Client:
 
 
 def publish_event(client: mqtt.Client, unit_id: str, payload: dict) -> None:
+    # 4.3 – sensor event publishes to sensors/events topic
     topic = f'sensors/events/{unit_id}'
     _publish(client, topic, payload, qos=1)
 
 
 def publish_telemetry(client: mqtt.Client, unit_id: str, payload: dict) -> None:
+    # 4.3 – vehicle telemetry publishes to vehicles/telemetry topic
     topic = f'vehicles/telemetry/{unit_id}'
     _publish(client, topic, payload, qos=0)
 
 
 def publish_mission(client: mqtt.Client, unit_id: str, payload: dict) -> None:
+    # 4.3 – mission status publishes to vehicles/missions topic
     topic = f'vehicles/missions/{unit_id}'
     _publish(client, topic, payload, qos=1)
 
 
 def publish_coordination(client: mqtt.Client, resource_id: str, phase: str, payload: dict) -> None:
+    # 4.4 – Ricart/Agrawala message publishes to vehicles/coordination topic
     topic = f'vehicles/coordination/{phase}/{resource_id}'
     _publish(client, topic, payload, qos=1)
 

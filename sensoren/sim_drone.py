@@ -81,6 +81,7 @@ def simulate_drone_work(mission_id, incident_type, x, y):
     move_towards_target(x, y)
     time.sleep(1.2)
     _send_update(mission_id, 'DONE', 'inspection complete')
+    # 4.4 – charging station access requests, resource acquires then releases
     if _COORDINATOR:
         ok = _COORDINATOR.request_access('charging_station', timeout=30.0)
         if ok:
@@ -125,8 +126,10 @@ def start_rpc_server():
 
 def run():
     global _mqtt, _COORDINATOR, _ROUTER
+    # 4.3 – MQTT client builds, router creates
     _mqtt        = build_client(f'{UNIT_ID}-pub')
     _ROUTER      = CommunicationRouter(mqtt_client=_mqtt, http_url=HOST)
+    # 4.4 – Ricart/Agrawala coordinator creates, peers registers
     _COORDINATOR = RicartAgrawalaCoordinator(UNIT_ID, _mqtt, peers=[
         'drone-1', 'repair-rover-1', 'supply-rover-1',
     ])
@@ -136,7 +139,7 @@ def run():
         target=start_charging_trigger_loop,
         args=(UNIT_ID, _COORDINATOR, STATE),
         daemon=True,
-    ).start()
+    ).start()  # 4.4 – charging trigger loop starts, MQTT listens
 
     map_data = fetch_map_once(HOST)
     nx, ny = find_nearest_land(map_data, DRONE['x'], DRONE['y'])
@@ -148,6 +151,7 @@ def run():
     while True:
         DRONE['state'] = STATE['value']
         register_unit(DRONE, HOST)
+    # 4.3 – telemetry publishes via MQTT or router
         if _ROUTER:
             _ROUTER.send('telemetry', _telemetry_payload(), prefer='auto')
         else:
