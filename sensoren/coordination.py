@@ -1,184 +1,196 @@
+"""Ricart/Agrawala distributed mutual exclusion over MQTT."""
+
 import json
 import os
 import threading
 import time
 
-from mqtt_utils import publish_coordination
+from mqtt_utils import build_client, publish_coordination
+
+ALL_VEHICLE_PEERS = ['drone-1', 'repair-rover-1', 'supply-rover-1']
 
 
 class RicartAgrawalaCoordinator:
-    """Simple MQTT-based Ricart/Agrawala coordinator for a shared resource."""
 
-    def __init__(self, node_id, mqtt_client, resource_id='charging_station', peers=None):
-        self.node_id = node_id
-        self.resource_id = resource_id
-        self.mqtt_client = mqtt_client
-        self.peers = [p.strip() for p in (peers or []) if p and p.strip()]
-        self.peers = [p for p in self.peers if p != node_id]
-        self.lock = threading.RLock()
-        self.state = 'IDLE'
+    def __init__(self, node_id, pub_client, resource_id='charging_station', peers=None):
+        self.node_id       = node_id
+        self.resource_id   = resource_id
+        self._pub          = pub_client
+        self._sub          = None
+        raw_peers = peers if peers is not None else ALL_VEHICLE_PEERS
+        self.peers = [p for p in raw_peers if p and p.strip() and p != node_id]
+        self._lock         = threading.RLock()
+        self.state         = 'IDLE'
         self.logical_clock = 0
-        self.current_request = None
-        self.reply_from = set()
-        self.deferred_requests = []
-        self._wait_event = threading.Event()
-        self._last_owner = None
+        self._req          = None
+        self._replies      = set()
+        self._deferred     = []
+        self._ready        = threading.Event()
 
-    def start(self):
-        self.mqtt_client.subscribe('vehicles/coordination/#', qos=1)
-        self.mqtt_client.on_message = self._on_message
+    def start(self, sub_client=None):
+        """Create dedicated subscriber and subscribe to coordination topics.
 
-    @property
-    def is_held(self):
-        return self.state == 'HELD'
+        In production (Docker), sub_client is None and a real paho MQTT client
+        is created via build_client().  In tests, pass a SimMqttClient so the
+        harness can deliver messages without a real broker.
+        """
+        if sub_client is not None:
+            self._sub = sub_client
+        else:
+            self._sub = build_client(f'{self.node_id}-coord-sub')
+        self._sub.on_message = self._on_message
+        self._sub.subscribe('vehicles/coordination/#', qos=1)
+        print(f'[coord:{self.node_id}] started, peers={self.peers}')
 
-    def request_access(self, resource_id='charging_station', hold_seconds=2.0, timeout=6.0):
-        with self.lock:
+    def request_access(self, resource_id='charging_station', timeout=30.0):
+        """Block until this node holds the resource, or timeout expires.
+        Returns True if HELD, False on timeout.
+        """
+        with self._lock:
             if self.state == 'HELD':
                 return True
             self.resource_id = resource_id
             self.logical_clock += 1
-            self.state = 'WAITING'
-            self.current_request = {
-                'type': 'request',
-                'resource_id': self.resource_id,
-                'from_node': self.node_id,
-                'timestamp': self.logical_clock,
+            self.state  = 'WAITING'
+            self._req   = {
+                'type':        'request',
+                'resource_id': resource_id,
+                'from_node':   self.node_id,
+                'timestamp':   self.logical_clock,
             }
-            self.reply_from = set()
-            self._wait_event.clear()
+            self._replies.clear()
+            self._ready.clear()
             self._publish_state('WAITING')
-            publish_coordination(self.mqtt_client, self.resource_id, 'requests', self.current_request)
+            publish_coordination(self._pub, resource_id, 'requests', self._req)
+            print(f'[coord:{self.node_id}] REQUEST sent  clock={self.logical_clock}')
+
+        if not self.peers:
+            with self._lock:
+                self.state = 'HELD'
+                self._publish_state('HELD')
+                print(f'[coord:{self.node_id}] HELD (no peers)')
+            return True
 
         deadline = time.time() + timeout
         while time.time() < deadline:
-            with self.lock:
-                if self.reply_count() >= len(self.peers):
-                    self.state = 'HELD'
-                    self._publish_state('HELD')
+            self._ready.wait(timeout=min(0.5, deadline - time.time()))
+            with self._lock:
+                if self.state == 'HELD':
+                    print(f'[coord:{self.node_id}] ENTER charging_station  clock={self.logical_clock}')
                     return True
-            self._wait_event.wait(0.2)
 
-        with self.lock:
-            if self.reply_count() >= len(self.peers):
-                self.state = 'HELD'
-                self._publish_state('HELD')
-                return True
+        with self._lock:
+            print(f'[coord:{self.node_id}] TIMEOUT waiting for replies '
+                  f'({len(self._replies)}/{len(self.peers)} received)')
             self.state = 'IDLE'
-            self.current_request = None
+            self._req  = None
             self._publish_state('IDLE')
-            return False
+            deferred, self._deferred = list(self._deferred), []
+
+        for req in deferred:
+            self._send_reply(req)
+        return False
 
     def release_access(self):
-        with self.lock:
+        """Release the resource and send deferred replies."""
+        with self._lock:
             if self.state != 'HELD':
                 return
             self.state = 'IDLE'
-            self._last_owner = None
-            self.current_request = None
-            self.reply_from = set()
-            self._wait_event.clear()
+            self._req  = None
+            self._ready.clear()
             self._publish_state('IDLE')
-            publish_coordination(self.mqtt_client, self.resource_id, 'releases', {
-                'type': 'release',
+            publish_coordination(self._pub, self.resource_id, 'releases', {
+                'type':        'release',
                 'resource_id': self.resource_id,
-                'from_node': self.node_id,
-                'timestamp': self.logical_clock,
+                'from_node':   self.node_id,
+                'timestamp':   self.logical_clock,
             })
-            while self.deferred_requests:
-                req = self.deferred_requests.pop(0)
-                self._send_reply(req)
+            print(f'[coord:{self.node_id}] EXIT  charging_station  clock={self.logical_clock}')
+            deferred, self._deferred = list(self._deferred), []
+
+        for req in deferred:
+            self._send_reply(req)
 
     def _on_message(self, _client, _userdata, msg):
         try:
-            payload = json.loads(msg.payload.decode('utf-8'))
+            p = json.loads(msg.payload.decode('utf-8'))
         except Exception:
             return
-        if not isinstance(payload, dict):
+        if not isinstance(p, dict):
             return
-        topic = msg.topic
-        if topic.startswith('vehicles/coordination/requests/'):
-            self._handle_request(payload)
-        elif topic.startswith('vehicles/coordination/replies/'):
-            self._handle_reply(payload)
-        elif topic.startswith('vehicles/coordination/releases/'):
-            self._handle_release(payload)
+        t = msg.topic
+        if   t.startswith('vehicles/coordination/requests/'): self._handle_request(p)
+        elif t.startswith('vehicles/coordination/replies/'):  self._handle_reply(p)
+        elif t.startswith('vehicles/coordination/releases/'): self._handle_release(p)
 
-    def _handle_request(self, payload):
-        if payload.get('resource_id') != self.resource_id:
-            return
-        if payload.get('from_node') == self.node_id:
-            return
-        with self.lock:
-            self.logical_clock = max(self.logical_clock, int(payload.get('timestamp', 0))) + 1
-            if self.state == 'HELD' or (self.state == 'WAITING' and self._incoming_has_priority(payload)):
-                self.deferred_requests.append(payload)
-                self._publish_state('WAITING')
-                return
-            self._send_reply(payload)
+    def _handle_request(self, p):
+        if p.get('resource_id') != self.resource_id: return
+        if p.get('from_node')   == self.node_id:     return
+        with self._lock:
+            self.logical_clock = max(self.logical_clock, int(p.get('timestamp', 0))) + 1
+            if self.state == 'HELD' or (self.state == 'WAITING' and self._i_have_priority(p)):
+                self._deferred.append(p)
+                print(f'[coord:{self.node_id}] DEFERRED request from {p.get("from_node")}')
+            else:
+                self._send_reply(p)
 
-    def _handle_reply(self, payload):
-        if payload.get('resource_id') != self.resource_id:
-            return
-        if payload.get('to_node') != self.node_id:
-            return
-        if payload.get('from_node') == self.node_id:
-            return
-        with self.lock:
-            if payload.get('from_node') in self.reply_from:
+    def _handle_reply(self, p):
+        if p.get('resource_id') != self.resource_id: return
+        if p.get('to_node')     != self.node_id:     return
+        if p.get('from_node')   == self.node_id:     return
+        with self._lock:
+            self.logical_clock = max(self.logical_clock, int(p.get('timestamp', 0))) + 1
+            sender = p.get('from_node')
+            if sender in self._replies:
                 return
-            self.reply_from.add(payload.get('from_node'))
-            if self.state == 'WAITING' and self.reply_count() >= len(self.peers):
+            self._replies.add(sender)
+            print(f'[coord:{self.node_id}] REPLY from {sender}  '
+                  f'({len(self._replies)}/{len(self.peers)})')
+            if self.state == 'WAITING' and len(self._replies) >= len(self.peers):
                 self.state = 'HELD'
-                self._last_owner = self.node_id
                 self._publish_state('HELD')
-                self._wait_event.set()
+                self._ready.set()
 
-    def _handle_release(self, payload):
-        if payload.get('resource_id') != self.resource_id:
-            return
-        if payload.get('from_node') == self.node_id:
-            return
-        with self.lock:
-            self.logical_clock = max(self.logical_clock, int(payload.get('timestamp', 0))) + 1
-            self._publish_state('IDLE')
-            while self.deferred_requests:
-                req = self.deferred_requests.pop(0)
-                self._send_reply(req)
+    def _handle_release(self, p):
+        """Handle RELEASE messages from peers."""
+        if p.get('resource_id') != self.resource_id: return
+        if p.get('from_node')   == self.node_id:     return
+        with self._lock:
+            self.logical_clock = max(self.logical_clock, int(p.get('timestamp', 0))) + 1
 
-    def _send_reply(self, request):
-        if request.get('from_node') == self.node_id:
+    def _i_have_priority(self, incoming):
+        """Return True if our request has higher priority than incoming."""
+        if self._req is None:
+            return False
+        my_ts = int(self._req.get('timestamp', 0))
+        in_ts = int(incoming.get('timestamp', 0))
+        if my_ts != in_ts:
+            return my_ts < in_ts
+        return self.node_id < incoming.get('from_node', '')
+
+    def _send_reply(self, req):
+        if req.get('from_node') == self.node_id:
             return
-        payload = {
-            'type': 'reply',
+        with self._lock:
+            self.logical_clock += 1
+            ts = self.logical_clock
+        publish_coordination(self._pub, self.resource_id, 'replies', {
+            'type':        'reply',
             'resource_id': self.resource_id,
-            'from_node': self.node_id,
-            'to_node': request.get('from_node'),
-            'timestamp': self.logical_clock,
-        }
-        publish_coordination(self.mqtt_client, self.resource_id, 'replies', payload)
+            'from_node':   self.node_id,
+            'to_node':     req.get('from_node'),
+            'timestamp':   ts,
+        })
+        print(f'[coord:{self.node_id}] REPLY sent to {req.get("from_node")}  clock={ts}')
 
     def _publish_state(self, state):
-        payload = {
-            'type': 'state',
-            'resource_id': self.resource_id,
-            'state': state,
-            'owner': self.node_id if state == 'HELD' else None,
+        """Publish observer state update for the dashboard feed."""
+        publish_coordination(self._pub, self.resource_id, 'state', {
+            'type':         'state',
+            'resource_id':  self.resource_id,
+            'state':        state,
+            'owner':        self.node_id if state == 'HELD' else None,
             'logical_time': self.logical_clock,
-            'node_id': self.node_id,
-        }
-        publish_coordination(self.mqtt_client, self.resource_id, 'state', payload)
-
-    def _incoming_has_priority(self, payload):
-        if self.current_request is None:
-            return False
-        incoming_ts = int(payload.get('timestamp', 0))
-        my_ts = int(self.current_request.get('timestamp', 0))
-        if incoming_ts < my_ts:
-            return False
-        if incoming_ts > my_ts:
-            return True
-        return payload.get('from_node', '') > self.current_request.get('from_node', '')
-
-    def reply_count(self):
-        return len(self.reply_from)
+            'node_id':      self.node_id,
+        })

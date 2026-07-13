@@ -3,7 +3,6 @@ import paho.mqtt.client as mqtt
 from rpc_utils import load_grpc_support
 import dashboard as dash
 
-# Constants declarations
 MAP_FILE   = 'map.json'
 MAP_STYLE  = 'island-v2'
 MAP_W = MAP_H = 20
@@ -21,7 +20,6 @@ ROLE_MAP    = {
     'low_stock':       'supply_rover', 'material_request': 'supply_rover',
 }
 
-# ── helpers ───────────────────────────────────────────────────────────────────
 def _int(v, default=0):
     return int(v) if isinstance(v, (int, float)) else default
 
@@ -29,7 +27,6 @@ def _now():
     return int(time.time())
 
 
-# ── main class ────────────────────────────────────────────────────────────────
 class Leitstelle:
     def __init__(self):
         self.map   = self._load_map()
@@ -47,8 +44,6 @@ class Leitstelle:
             os.path.dirname(os.path.abspath(__file__)))
         threading.Thread(target=self._incident_loop, daemon=True).start()
         threading.Thread(target=self._mqtt_loop,     daemon=True).start()
-
-    # ── MQTT ─────────────────────────────────────────────────────────────────
 
     def _mqtt_loop(self):
         c = mqtt.Client(client_id='leitstelle-sub', clean_session=True)
@@ -148,8 +143,6 @@ class Leitstelle:
             self.coord_log.append(self.resource_state.copy())
             self.coord_log = self.coord_log[-50:]
 
-    # ── map ───────────────────────────────────────────────────────────────────
-
     def _cell_at(self, x, y):
         if not (0 <= x < MAP_W and 0 <= y < MAP_H): return {'type': 'water'}
         return self.map['cells'][y * MAP_W + x]
@@ -196,8 +189,6 @@ class Leitstelle:
                              (13,7):'harbor',(16,9):'charging_station'}.items():
             data['cells'][y*MAP_W+x]['infrastructure'] = name
         return data
-
-    # ── incident pipeline ─────────────────────────────────────────────────────
 
     def _incident_loop(self):
         while True:
@@ -290,8 +281,6 @@ class Leitstelle:
                                  'message':msg,'timestamp':_now()})
         self.mission_log = self.mission_log[-200:]
 
-    # ── HTTP ─────────────────────────────────────────────────────────────────
-
     def _respond(self, conn, status, body, ctype='application/json'):
         hdr = (f'HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\n'
                f'Content-Length: {len(body)}\r\n\r\n').encode()
@@ -381,7 +370,9 @@ class Leitstelle:
 
     def _render(self):
         return dash.render(self.map, self.units, self.incidents,
-                           self.active_missions, self.mission_log, self.history)
+                           self.active_missions, self.mission_log, self.history,
+                           resource_state=self.resource_state,
+                           coord_log=self.coord_log)
 
     def serve(self, host='0.0.0.0', port=8080):
         s = socket.socket()

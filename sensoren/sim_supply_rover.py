@@ -29,7 +29,7 @@ SUPPLY_ROVER = {
 STATE = {'value': 'IDLE'}
 GRPC, ASSIGNMENT_PB2, ASSIGNMENT_PB2_GRPC = load_grpc_support(os.path.dirname(os.path.abspath(__file__)))
 
-_mqtt = None  # set in run()
+_mqtt = None
 _COORDINATOR = None
 _ROUTER = None
 
@@ -158,7 +158,10 @@ def simulate_supply_work(mission_id, incident_type, x, y):
     time.sleep(1.8)
     send_mission_update(mission_id, 'DONE', 'delivery complete')
     if _COORDINATOR:
-        _COORDINATOR.release_access()
+        ok = _COORDINATOR.request_access('charging_station', timeout=30.0)
+        if ok:
+            time.sleep(2.0)
+            _COORDINATOR.release_access()
     STATE['value'] = 'IDLE'
 
 
@@ -216,6 +219,35 @@ def register_with_retry(retries=10, delay=3):
             time.sleep(delay)
 
 
+def _trigger_charging_loop():
+    """Listen on charging/trigger/<UNIT_ID> so tests can force a charging
+    request without needing a full mission cycle."""
+    import paho.mqtt.client as paho_mqtt
+    client = paho_mqtt.Client(client_id=f'{UNIT_ID}-trigger-sub', clean_session=True)
+
+    def on_message(_c, _u, msg):
+        if _COORDINATOR and STATE['value'] == 'IDLE':
+            print(f'[{UNIT_ID}] charging trigger received, requesting access')
+            ok = _COORDINATOR.request_access('charging_station', timeout=30.0)
+            if ok:
+                time.sleep(2.0)
+                _COORDINATOR.release_access()
+
+    client.on_message = on_message
+    client.on_connect = lambda c, *_: c.subscribe(f'charging/trigger/{UNIT_ID}', qos=1)
+    import os as _os
+    broker = _os.environ.get('MQTT_BROKER', '127.0.0.1')
+    port = int(_os.environ.get('MQTT_PORT', '1883'))
+    for _ in range(10):
+        try:
+            client.connect(broker, port, keepalive=30)
+            client.loop_forever()
+            return
+        except Exception as exc:
+            print(f'[{UNIT_ID}] trigger-sub connect failed: {exc}')
+            time.sleep(2)
+
+
 def run():
     global _mqtt, _COORDINATOR, _ROUTER
     _mqtt = build_client(f'{UNIT_ID}-pub')
@@ -224,6 +256,7 @@ def run():
         'drone-1', 'repair-rover-1', 'supply-rover-1',
     ])
     _COORDINATOR.start()
+    threading.Thread(target=_trigger_charging_loop, daemon=True).start()
     rpc_server = start_rpc_server()
     map_data = fetch_map_once()
     nx, ny = find_nearest_land(map_data, SUPPLY_ROVER['x'], SUPPLY_ROVER['y'])

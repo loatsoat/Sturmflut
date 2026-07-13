@@ -23,7 +23,65 @@ def _td(bg, text, border, title, display):
     return f'<td title="{title}" style="{style}">{display}</td>'
 
 
-def render(map_data, units, incidents, active_missions, mission_log, history):
+_COORD_STATE_BG = {
+    'IDLE':    '#d1fae5',
+    'WAITING': '#fef3c7',
+    'HELD':    '#fee2e2',
+}
+_COORD_STATE_BORDER = {
+    'IDLE':    '2px solid #6ee7b7',
+    'WAITING': '2px solid #fcd34d',
+    'HELD':    '2px solid #f87171',
+}
+
+
+def _render_coord_panel(resource_state, coord_log):
+    """Observer-only panel for the Leitstelle: shows charging-station state."""
+    rs    = resource_state or {}
+    state = rs.get('state', 'IDLE')
+    owner = rs.get('owner') or '—'
+    ltime = rs.get('logical_time', 0)
+    bg    = _COORD_STATE_BG.get(state,    '#f3f4f6')
+    bord  = _COORD_STATE_BORDER.get(state,'2px solid #d1d5db')
+
+    header = (
+        f'<div style="padding:8px 12px;background:{bg};border:{bord};'
+        f'border-radius:4px;margin-bottom:8px;font-family:monospace">'
+        f'<strong>Ladestation (Ricart/Agrawala)</strong> &nbsp;|&nbsp; '
+        f'Zustand: <strong>{state}</strong> &nbsp;|&nbsp; '
+        f'Inhaber: <strong>{owner}</strong> &nbsp;|&nbsp; '
+        f'Logische Zeit: <strong>{ltime}</strong> &nbsp;|&nbsp; '
+        f'<em style="color:#6b7280">Leitstelle beobachtet nur (kein zentraler Eingriff)</em>'
+        f'</div>'
+    )
+
+    log_lines = []
+    for entry in (coord_log or [])[-15:]:
+        e_state = entry.get('state', '?')
+        e_node  = entry.get('node_id', '?')
+        e_owner = entry.get('owner') or '—'
+        e_lt    = entry.get('logical_time', 0)
+        e_bg    = _COORD_STATE_BG.get(e_state, '#f3f4f6')
+        log_lines.append(
+            f'<span style="background:{e_bg};padding:1px 4px;border-radius:2px">'
+            f'{e_node}</span> → {e_state}  (owner={e_owner}, t={e_lt})'
+        )
+
+    log_html = '<br>'.join(log_lines) if log_lines else 'Noch keine Koordinationsnachrichten'
+    log_block = (
+        f'<div style="font-family:monospace;font-size:12px;padding:8px;'
+        f'background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px;'
+        f'white-space:pre-wrap;line-height:1.6">{log_html}</div>'
+    )
+    return (
+        f'<div style="margin-top:10px;font-family:Arial,sans-serif">'
+        f'<strong>Koordinations-Log (letzte 15 Einträge)</strong>'
+        f'{header}{log_block}</div>'
+    )
+
+
+def render(map_data, units, incidents, active_missions, mission_log, history,
+           resource_state=None, coord_log=None):
     w, h   = map_data['width'], map_data['height']
     cells  = {(c['x'], c['y']): c for c in map_data['cells']}
     placed = {(u.get('x'), u.get('y')): (uid, u)
@@ -84,6 +142,7 @@ def render(map_data, units, incidents, active_missions, mission_log, history):
         pre('Incident history', hlines),
         pre('Mission progress', mlines, '360px'),
         '</div>',
+        _render_coord_panel(resource_state, coord_log),
         '<script>setTimeout(()=>location.reload(),3000)</script>',
         '</div>',
     ]
