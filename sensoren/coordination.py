@@ -113,7 +113,8 @@ class RicartAgrawalaCoordinator:
         # 4.3 – MQTT message receives, topic routes
         try:
             p = json.loads(msg.payload.decode('utf-8'))
-        except Exception:
+        except Exception as e:
+            print(f'[coord] dropped malformed message on {msg.topic}: {e}')
             return
         if not isinstance(p, dict):
             return

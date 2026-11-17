@@ -81,8 +81,9 @@ def run():
             # HTTP fallback
             try:
                 post_json(HOST + '/incident', event)
-            except Exception:
-                pass
+            except Exception as exc:
+                # MQTT already delivered it; HTTP is only a fallback
+                print('camera HTTP fallback failed', exc)
             print('camera reported blocked_route via MQTT')
         else:
             conf = round(random.uniform(0.6, 0.99), 2)
@@ -98,8 +99,9 @@ def run():
             publish_event(mqtt_client, UNIT_ID, event)
             try:
                 post_json(HOST + '/incident', event)
-            except Exception:
-                pass
+            except Exception as exc:
+                # MQTT already delivered it; HTTP is only a fallback
+                print('camera HTTP fallback failed', exc)
             print('camera reported person_detected', conf, 'via MQTT')
 
         time.sleep(REPORT_INTERVAL)

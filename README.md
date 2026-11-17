@@ -1,11 +1,15 @@
 # Sturmflut Nordsee
 
+[![CI](https://github.com/loatsoat/Sturmflut/actions/workflows/ci.yml/badge.svg)](https://github.com/loatsoat/Sturmflut/actions/workflows/ci.yml)
+
 A distributed disaster-management system for a fictional North Sea island after a storm surge. Cameras and sensors detect incidents, a central control room (the *Leitstelle*) assigns missions, and a drone and two rovers carry them out. The vehicles coordinate access to a shared charging station without a central lock.
 
 Course project for **Verteilte Systeme** (Distributed Systems), SS2026.
 Authors: Ho Quang Minh Phan, Bao Chau Nguyen.
 
 Everything is simulated (no real hardware) and runs as separate Docker containers.
+
+![Leitstelle dashboard: island map with live vehicle positions, incident history, mission progress and the Ricart/Agrawala coordination log](docs/dashboard.png)
 
 ## What it demonstrates
 
@@ -58,7 +62,7 @@ Vehicle states: `IDLE`, `ASSIGNED`, `BUSY`, `ERROR`.
 
 ### Run
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/loatsoat/Sturmflut.git
 cd Sturmflut
 docker compose up -d --build
 ```
@@ -123,12 +127,23 @@ The drone, repair rover and supply rover compete for one charging station. Each 
 
 Why MQTT for this: every vehicle is already connected to the broker, one publish reaches all peers, and QoS 1 duplicates are made harmless because replies are tracked in a set.
 
+## Design decisions
+
+- **Three protocols, each for what it is good at.** MQTT for events and telemetry (many publishers, fire-and-forget, the Leitstelle does not need to know who is online). gRPC for mission assignment (a typed request to one specific vehicle that needs an answer). HTTP for registration and as a fallback.
+- **HTTP on raw sockets.** Task 1 asks for no framework, so request parsing and status codes are written by hand in `leitstelle/app.py`.
+- **At-least-once delivery, made idempotent.** MQTT QoS 1 can deliver twice, so the Leitstelle drops duplicate incidents (same type and position) and outdated mission updates instead of trying to get exactly-once delivery.
+- **No central lock for the charging station.** Ricart/Agrawala runs between the vehicles over MQTT. The Leitstelle only observes the state topic, so it is not a single point of failure for coordination.
+- **Size-based channel choice.** `CommunicationRouter` sends payloads over MQTT and switches to HTTP above 12 KB, or when no broker client is available.
+- **Retries instead of start order.** Containers retry broker connection and registration, so `docker compose up` works without health-check ordering.
+
 ## Tests
 
 ```bash
-pip install pytest paho-mqtt==1.6.1 grpcio grpcio-tools
-pytest tests/
+pip install pytest -r sensoren/requirements.txt
+pytest
 ```
+
+CI runs the same commands on every push (`.github/workflows/ci.yml`).
 
 - `tests/test_verification_plan.py` runs the Ricart/Agrawala verification (safety and liveness) against a simulated broker.
 - `tests/test_communication_router.py` tests the routing between MQTT and HTTP.
@@ -160,3 +175,7 @@ Sturmflut/
 ├── tools/
 └── docs/
 ```
+
+## License
+
+MIT, see [LICENSE](LICENSE).

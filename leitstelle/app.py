@@ -68,8 +68,8 @@ class Leitstelle:
     def _on_msg(self, _c, _u, msg):
         try:
             p = json.loads(msg.payload)
-        except Exception:
-            return
+        except Exception as e:
+            print(f'[mqtt] dropped malformed message on {msg.topic}: {e}'); return
         t = msg.topic
         # 4.3 – topic routes message
         if   t.startswith('sensors/events/'):     self._on_event(p)
@@ -165,7 +165,9 @@ class Leitstelle:
         try:
             data = json.load(open(MAP_FILE, encoding='utf-8'))
             if self._valid_map(data): return data
-        except Exception: pass
+            print(f'[map] {MAP_FILE} invalid, rebuilding')
+        except Exception as e:
+            print(f'[map] could not load {MAP_FILE} ({e}), rebuilding')
         data = self._build_map()
         json.dump(data, open(MAP_FILE, 'w', encoding='utf-8'))
         return data
@@ -377,7 +379,8 @@ class Leitstelle:
                 self._respond(conn, '200 OK', b'{"result":"updated"}')
             else:
                 conn.sendall(b'HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n')
-        except Exception:
+        except Exception as e:
+            print(f'[http] 500 on request: {e!r}')
             conn.sendall(b'HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n')
         finally:
             conn.close()
